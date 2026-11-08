@@ -15,6 +15,33 @@ Any other changes, regardless of size, is considered a patch. (Very few exceptio
 Note: A change from dev or beta to a release is not impacted by an untestable feature like needing to wait for a
 specific platform to have new content. In cases like that, the untested feature can be logged and the version released.
 
+## v26.9.0-beta.1 - Nov 8
+- No changes to the bot, but lots of testing
+  - /notification refresh works perfectly
+  - Kick integration still seems to be having an issue
+  - /channels list shows updates and status (currenly it shows one with "BargazBot" and the other without
+  - /channels set includes updates and status
+  - Admins now succefully have full access by default
+  - /permissions add doesn't actually give a popup
+  - /permissions add doesnt work at all
+  - /permissions list works  but has a weird format
+  - Cannot test /permissions edit since /permissions add doesn't work
+  - /entitlement view only shows what "you" have contributed to a server
+  - Updates still show "unknown role"
+- Possible changes while in Beta:
+  - Give people with Manage Server access full config access
+  - Add more commands to the defaults that everyone can use
+  - Update /help
+    - Add the ability to do /help _______ for details on one specific command
+  - Remove the everyone field from /permissions add and just add it as an option to the target field
+  - Allow the ability to turn off a feature using /channels (probably adding /channels remove)
+  - Add a new field to /entitlement view so you can choose to see how much entitlement you've contributed vs how much the server has
+  - Remove the "unknown role" field from update messages
+  - Add a proper welcome message
+  - Make #bargaz appear by default and set all channel configs to it upon joining
+  - Add the ability to have a user populated in the message when using /notification message
+  - Make the target field on /permissions add & edit a required field (already required on remove)
+
 ## v26.9.0-dev.3 - Nov 6
 - Reworked UPS monitoring and shutdown process
   - Added network connection information to UPS status messages
