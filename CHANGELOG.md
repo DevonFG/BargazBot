@@ -5,8 +5,10 @@
 - FEATURE = The feature number from that year
     - When a new feature is released in a new year, FEATURE starts at 1
 - PATCH = Bug fixes since the last feature added (Year doesn't turn over till new feature is added)
-- NOTE = Optional development status "dev" or "beta" to indicate an in-progress version
-    - "dev" is refering to a version that has not been deployed while "beta" is deployed while undergoing testing
+- NOTE = Optional development status "dev", "beta", or "error" to indicate an in-progress version
+    - "dev" is refering to a version that has not been deployed
+    - "beta" is refering to a version that is deployed while undergoing testing
+    - "error" is refering to a version that exists due to system errors that require edits, it can be deployed or not
 - V = Optional revision number that corresponds with the current development status (NOTE), starting at 1
 
 A feature is when something is added/removed that changes what the user can do.
@@ -14,6 +16,12 @@ Any other changes, regardless of size, is considered a patch. (Very few exceptio
 
 Note: A change from dev or beta to a release is not impacted by an untestable feature like needing to wait for a
 specific platform to have new content. In cases like that, the untested feature can be logged and the version released.
+Additional Note: Error versions can have beta, dev, and release version
+before and afterwards due to the multi-use of the version type.
+
+## v26.9.0-error.2 - Nov 10
+- Updated CHANGELOG.md to have new versioning information
+- Updated README.md to have licensing inofrmation
 
 ## v26.9.0-error.1 - Nov 10
 - Moved backup-databases.js, logging.js, and shutdownCoordinator.js implementations to Bargaz and removed local copies

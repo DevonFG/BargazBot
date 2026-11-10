@@ -52,3 +52,9 @@ Environment files, credentials, databases, local configuration, logs, and PM2 ru
 - **[Bargaz Website](https://bargaz.app)** — Information about Bargaz and its projects.
 - **[The Wolf Den Discord Server](https://discord.gg/PvYFVshGrZ)** - Project feedback, bug reports, support, and Bargaz status.
 - **[BargazBot Invite Link](https://discord.com/oauth2/authorize?client_id=1472482809095393384)** - Invite me to your Discord server!
+
+## License
+
+A license for Bargaz, BargazBot, and BargazLive has not yet been selected. Once selected, it will be posted at [bargaz.app/license](https://bargaz.app/license).
+
+Third-party dependencies retain their respective licenses.
