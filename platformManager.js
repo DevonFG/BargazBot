@@ -2,7 +2,7 @@ import * as youtube from "./youtube.js";
 import * as twitch from "./twitch.js";
 import * as kick from "./kick.js";
 import * as notifications from "./notifications.js";
-import {isShutdownRequested} from "./shutdownCoordinator.js";
+import {isShutdownRequested} from "bargaz/shutdownCoordinator.js";
 
 const DEFAULT_CHECK_INTERVAL = 300000;
 const METADATA_REFRESH_INTERVAL = 60000;

@@ -15,11 +15,31 @@ Any other changes, regardless of size, is considered a patch. (Very few exceptio
 Note: A change from dev or beta to a release is not impacted by an untestable feature like needing to wait for a
 specific platform to have new content. In cases like that, the untested feature can be logged and the version released.
 
+## v26.9.0-error.1 - Nov 10
+- Moved backup-databases.js, logging.js, and shutdownCoordinator.js implementations to Bargaz and removed local copies
+- Added Bargaz as a GitHub nmp dependency and updated shared-module imports
+- Moved UPS status reads, network checks, and polling from upsNotifier.js to Bargaz
+  - Kept Discord message formatting and delivery in BargazBot
+  - Corrected manual shutdown announcements
+  - Added shutdown handling for the shared monitor
+- Added diagnosticsNotifier.js to delivery system alerts and recovery notices to the owner errors channel
+- Added lifecycle.js to track active Discord callbacks and finish their work before closing SQLite
+- Updated commands.js to use shared logging, track permission-menu callbacks, and stop collectors during shutdown
+- Updated bot.js to handle SIGINT and SIGTERM, drain active work, stop monitors, disconnect Discord, and close SQLite
+  - Prevented PM2 from restarting the bot while the host prepares shut down
+  - Updated the health response to report shutdown status
+  - Removed temporary startup debugging output
+- Updated storage.js to create the database directory when needed and permit another close attempt after a failure
+- Added ecosystem.config.cjs with a 65-second PM2 shutdown timeout
+- Added .env.example and expanded .gitignore
+- Reorganized README for the new desired format
+Pending testing: Live Pi operation, diagnostic delivery, preserved server settings, and shutdown during active work.
+
 ## v26.9.0-beta.1 - Nov 8
 - No changes to the bot, but lots of testing
   - /notification refresh works perfectly
   - Kick integration still seems to be having an issue
-  - /channels list shows updates and status (currenly it shows one with "BargazBot" and the other without
+  - /channels list shows updates and status (currently it shows one with "BargazBot" and the other without)
   - /channels set includes updates and status
   - Admins now succefully have full access by default
   - /permissions add doesn't actually give a popup

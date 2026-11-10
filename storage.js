@@ -1,10 +1,13 @@
 import Database from "better-sqlite3";
-import { DB_PATH } from "./config.js";
+import {DB_DIR, DB_PATH} from "./config.js";
+import fs from "node:fs";
 
 let db;
 
 // Initialize SQLite connection & Schema
 export function initDB() {
+  fs.mkdirSync(DB_DIR, {recursive: true});
+  databaseClosing = false;
   db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
@@ -253,7 +256,6 @@ export function getDB() {
 let databaseClosing = false;
 export function isDatabaseClosing() {return databaseClosing;}
 export function closeDB() {
-  if (databaseClosing) {return !db || !db.open;}
   databaseClosing = true;
   if (!db || !db.open) {return true;}
   try {db.close(); console.log("SQLite database closed.");                   return true;

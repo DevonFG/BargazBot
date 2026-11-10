@@ -1,9 +1,46 @@
 import * as discord        from "discord.js";
 import * as channelManager from "./channelManager.js";
-import * as logging        from "./logging.js";
+import {createLogger} from "bargaz/logging.js";
+import {isShutdownRequested} from "bargaz/shutdownCoordinator.js";
+import {getDB} from "./storage.js";
+import {trackBotCallback} from "./lifecycle.js";
 import * as permissions    from "./permissions.js";
 import * as notifications  from "./notifications.js";
 import * as entitlements   from "./entitlements.js";
+
+const logging = createLogger({
+  EmbedBuilder: discord.EmbedBuilder,
+  getDB,
+  getChannel: channelManager.getChannel
+});
+
+const commandCollectors = new Set();
+
+function createCommandCollector(message, options) {
+  const collector = message.createMessageComponentCollector(options);
+
+  if (isShutdownRequested()) {
+    collector.stop("shutdown");
+    return collector;
+  }
+
+  commandCollectors.add(collector);
+  collector.once("end", () => commandCollectors.delete(collector));
+
+  return collector;
+}
+
+function onCommandComponent(collector, handler) {
+  collector.on("collect", trackBotCallback(handler));
+}
+
+export function stopCommandCollectors() {
+  for (const collector of commandCollectors) {
+    collector.stop("shutdown");
+  }
+
+  commandCollectors.clear();
+}
 
 // Checks whether a member can execute a specific command
 // interaction = ChatInputCommandInteraction
@@ -656,8 +693,8 @@ async function handlePermissionEditor(interaction, editing) {
   let reviewing = false;
   await interaction.reply({...buildPermissionEditor(target, level, category, selected), flags: discord.MessageFlags.Ephemeral});
   const message = await interaction.fetchReply();
-  const collector = message.createMessageComponentCollector({time: 300000});
-  collector.on("collect", async component => {
+  const collector = createCommandCollector(message, {time: 300000});
+  onCommandComponent(collector, async component => {
     if (component.user.id !== interaction.user.id) {await component.reply({content: "Only the person who opened this editor can use it.", flags: discord.MessageFlags.Ephemeral});return;}
     if (!permissions.canUseCommand(component.member, "permissions", editing ? "edit" : "add")) {await component.update({content: "You no longer have permission to perform this action.", embeds: [], components: []}); collector.stop("denied"); return;}
     try {
@@ -705,7 +742,7 @@ async function handlePermissionEditor(interaction, editing) {
       await interaction.editReply({content: "The permission editor encountered an error. No further changes can be made in this session.", embeds: [], components: []}).catch(() => {});
     }
   });
-  collector.on("end", async (_, reason) => {if (["saved", "cancelled", "denied", "changed", "error"].includes(reason)) {return;} await interaction.editReply({content: "Permission editor expired. No changes were saved.", embeds: [], components: []}).catch(() => {});});
+  collector.on("end", async (_, reason) => {if (["saved", "cancelled", "denied", "changed", "error", "shutdown"].includes(reason)) {return;} await interaction.editReply({content: "Permission editor expired. No changes were saved.", embeds: [], components: []}).catch(() => {});});
 }
 
 // Removes a permission grant after confirmation
@@ -725,8 +762,8 @@ async function handlePermissionRemove(interaction) {
     components: [buttons], flags: discord.MessageFlags.Ephemeral
   });
   const message   = await interaction.fetchReply();
-  const collector = message.createMessageComponentCollector({time: 120000});
-  collector.on("collect", async component => {
+  const collector = createCommandCollector(message, {time: 120000});
+  onCommandComponent(collector, async component => {
     if (component.user.id  !== interaction.user.id)                            {await component.reply({content:  "This confirmation belongs to another user.",        flags: discord.MessageFlags.Ephemeral}); return;}
     if (component.customId === "permission:remove-cancel")                     {await component.update({content: "Permission removal cancelled.",                     components: []}); collector.stop("cancelled"); return;}
     if (component.customId !== "permission:remove-confirm")                    {return;}
@@ -826,9 +863,9 @@ async function handlePermissionList(interaction) {
 
   await interaction.editReply(render());
   const message   = await interaction.fetchReply();
-  const collector = message.createMessageComponentCollector({time: 300000});
+  const collector = createCommandCollector(message, {time: 300000});
 
-  collector.on("collect", async component => {
+  onCommandComponent(collector, async component => {
     if (component.user.id !== interaction.user.id)        {await component.reply({content: "This menu belongs to another user.", flags: discord.MessageFlags.Ephemeral}); return;}
     if (component.customId === "permission:list-section") {section = component.values[0]; page = 0;}
     if (component.customId === "permission:list-prev")    {page--;}
