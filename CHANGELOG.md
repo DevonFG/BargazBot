@@ -19,6 +19,9 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.9.0 - Nov 10
+- Confirmed all features working
+
 ## v26.9.0-error.2 - Nov 10
 - Updated CHANGELOG.md to have new versioning information
 - Updated README.md to have licensing inofrmation
