@@ -494,7 +494,7 @@ export function getSubscribedGuilds(channelId) {
 
 async function getCurrentLivestream(channelId) {
   const data = await kickRequest("users/livestreams",{
-    broadcaster_user_id:channelId
+    user_id:channelId
   });
 
   if (!Array.isArray(data) && !Array.isArray(data?.data)) {
@@ -502,7 +502,11 @@ async function getCurrentLivestream(channelId) {
   }
   const streams = getResponseItems(data);
   return streams.find(stream =>
-    String(stream.broadcaster_user_id ?? stream.user_id) === String(channelId)
+    String(
+      stream.broadcaster_user?.id ??
+      stream.broadcaster_user_id ??
+      stream.user_id
+    ) === String(channelId)
   ) ?? null;
 }
 
@@ -557,7 +561,7 @@ function getStreamThumbnail(channel, livestream) {
   return (
     channel.stream?.thumbnail?.url ??
     (typeof channel.stream?.thumbnail === "string"
-      ? channel.stream.thumbnail
+      ? livestream.thumbnail
       : null) ??
     livestream?.thumbnail?.url ??
     livestream?.thumbnail_url ??

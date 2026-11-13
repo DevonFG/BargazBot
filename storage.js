@@ -3,6 +3,7 @@ import {DB_DIR, DB_PATH} from "./config.js";
 import fs from "node:fs";
 
 let db;
+let databaseClosing = false;
 
 // Initialize SQLite connection & Schema
 export function initDB() {
@@ -14,6 +15,7 @@ export function initDB() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       user_id TEXT PRIMARY KEY,
+      paid_until DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS guilds (
@@ -176,6 +178,7 @@ export function initDB() {
       target_id TEXT NOT NULL,
       access_level TEXT NOT NULL DEFAULT 'configuration'
         CHECK (access_level IN ('full', 'configuration', 'custom')),
+      can_delete_data INTEGER NOT NULL DEFAULT 0,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (guild_id, permission_type, target_id),
       FOREIGN KEY (guild_id, permission_type, target_id)
@@ -211,6 +214,10 @@ export function initDB() {
       FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
     CREATE INDEX IF NOT EXISTS idx_notification_refresh_usage
       ON notification_refresh_usage (guild_id, platform, used_at);
+    CREATE TABLE IF NOT EXISTS data_deletions (
+      user_id TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
   `);
 
 
@@ -220,30 +227,22 @@ if (!guildSettingsColumns.includes("updates_channel_id")) {
   db.exec("UPDATE guild_settings SET updates_channel_id = COALESCE(announcement_channel_id, status_channel_id, logs_channel_id)");
   console.log("Added BargazBot Updates channel setting.");
 }
-
-// Note: Adding new columns of data requires a 1-time command in addition to adding to CREATE TABLE
-// REMOVE THE db.prepare DURING THE NEXT UPDATE!!!
-db.prepare(`
-  INSERT OR IGNORE INTO guild_permission_profiles (
-    guild_id,
-    permission_type,
-    target_id,
-    access_level
-  )
-  SELECT
-    guild_id,
-    permission_type,
-    target_id,
-    CASE
-      WHEN can_manage_permissions = 1 THEN 'full'
-      ELSE 'configuration'
-    END
-  FROM guild_permissions
-`).run();
+const userColumns = db.prepare("PRAGMA table_info(users)").all().map(column => column.name);
+if (!userColumns.includes("paid_until")) {
+  db.exec("ALTER TABLE users ADD COLUMN paid_until DATETIME");
+  console.log("Added BargazBot paid entitlement placeholder.");
+}
+const profileColumns = db.prepare("PRAGMA table_info(guild_permission_profiles)").all().map(column => column.name);
+if (!profileColumns.includes("can_delete_data")) {
+  db.exec("ALTER TABLE guild_permission_profiles ADD COLUMN can_delete_data INTEGER NOT NULL DEFAULT 0");
+  console.log("Added BargazBot server data deletion flag.");
+}
   console.log("SQLite initialized at:", DB_PATH);
   return db;
 }
 
+
+// Note: Adding new columns of data requires a 1-time command in addition to adding to CREATE TABLE
 
 // Get active DB connection
 export function getDB() {
@@ -252,9 +251,6 @@ export function getDB() {
   return db;
 }
 
-
-let databaseClosing = false;
-export function isDatabaseClosing() {return databaseClosing;}
 export function closeDB() {
   databaseClosing = true;
   if (!db || !db.open) {return true;}

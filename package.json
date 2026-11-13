@@ -1,21 +1,17 @@
 {
   "name": "bargaz-bot",
-  "version": "26.9.0",
+  "version": "26.10.0",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
-    "@discordjs/rest": "^2.6.1",
     "axios": "^1.6.0",
     "bargaz": "git+https://github.com/DevonFG/Bargaz.git#a36b9a1e4ee5cc8d81357259f26acf9283b75d6e",
     "better-sqlite3": "^12.11.1",
-    "cheerio": "^1.0.0-rc.12",
-    "discord-api-types": "^0.38.49",
     "discord.js": "^14.26.4",
     "dotenv": "^16.6.1",
-    "express": "^5.2.1",
-    "rss-parser": "^3.13.0"
+    "express": "^5.2.1"
   },
   "overrides": {
     "undici": "^6.0.0"

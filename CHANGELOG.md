@@ -19,6 +19,29 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.10.0 - Nov 12
+- Fixed Kick notifications (multiple parameters corrected and used the refresh feature to confirm)
+- Fixed /pewrmissions remove failing before it could show a preview
+- Fixed startup/shutdown process
+- Removed a collection of stale code
+- Removed @discordjs/rest, cheerio, discord-api-types, and rss-parser dependencies
+- Added /logging with view, set, and reset for the seven categories (feature is not fully coded, just started)
+- Added member tracking so per-server data can be reported
+- Added /data view and delete for members and services
+  - Members can view and delete their own records, with a 24-hour suppression window
+  - Server delection selects categories, records the result in the logs channels, and can leave the server
+  - Deleting a member's data also withdraws their allocations
+- Added /data export as JSON or formatted text, privately orinto a text channel
+- Added /data restore
+  - Owner can roll back thw whole database
+  - Server managers can roll back their server
+- Added a server-data deletion flag to permission profiles
+- Added automatic database cleanup including a full pass at startup and a daily pass for guilds, channels, and suppressions
+- Updated /help to auto-populate, including help for specific commands
+- Updated /entitlements to allow ALL platforms to be configred at once
+- Updated the creator notification limit message to point at /entitlement allocate
+- Updated .env.example to actually match my .env
+
 ## v26.9.0 - Nov 10
 - Confirmed all features working
 

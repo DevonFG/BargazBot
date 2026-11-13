@@ -13,8 +13,35 @@ function normalizePlatform(platform) {
 function getPlatformColumn(platform)    {return PLATFORM_COLUMNS[normalizePlatform(platform)];}
 function getSubscriptionTable(platform) {return SUBSCRIPTION_TABLES[normalizePlatform(platform)];}
 
+// Data deletions keep a user id for 24 hours so it is not immediately re-collected
+export function isDataSuppressed(userId) {
+  const row = getDB().prepare(`
+    SELECT expires_at
+    FROM data_deletions
+    WHERE user_id = ?
+  `).get(userId);
+
+  return Boolean(row) && Number(row.expires_at) > Date.now();
+}
+
+// Starts the 24 hour window during which a user id is ignored
+export function suppressUserData(userId, hours = 24) {
+  getDB().prepare(`
+    INSERT INTO data_deletions (
+      user_id,
+      expires_at,
+      created_at
+    )
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+
+    ON CONFLICT(user_id) DO UPDATE SET
+      expires_at = excluded.expires_at
+  `).run(userId, Date.now() + hours * 3600000);
+}
+
 export function ensureUser(user) {
   if (!user?.id) {return;}
+  if (isDataSuppressed(user.id)) {return;}
   const db = getDB();
   db.prepare(`
     INSERT INTO users (
@@ -52,6 +79,36 @@ export function ensureUser(user) {
     ON CONFLICT(user_id)
     DO NOTHING
   `).run(user.id);
+}
+
+// Records that a user is currently in a server with BargazBot
+export function ensureGuildMember(guildId, userId, joinedAt = null) {
+  if (!guildId || !userId) {return;}
+  if (isDataSuppressed(userId)) {return;}
+  const joined = joinedAt ? new Date(joinedAt).toISOString() : null;
+
+  getDB().prepare(`
+    INSERT INTO guild_members (
+      guild_id,
+      user_id,
+      joined_at,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+
+    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+      joined_at = COALESCE(excluded.joined_at, guild_members.joined_at),
+      updated_at = CURRENT_TIMESTAMP
+  `).run(guildId, userId, joined);
+}
+
+export function removeGuildMember(guildId, userId) {
+  getDB().prepare(`
+    DELETE FROM guild_members
+    WHERE guild_id = ?
+      AND user_id = ?
+  `).run(guildId, userId);
 }
 
 export function getUserEntitlements(userId) {

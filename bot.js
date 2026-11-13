@@ -18,7 +18,7 @@ import {startDiagnosticsNotifier, stopDiagnosticsNotifier}           from "./dia
 import {trackBotCallback, drainBotTasks}                             from "./lifecycle.js";
 import { initDB, getDB, closeDB }                                    from "./storage.js";
 import {beginShutdown, registerShutdownHandler, isShutdownRequested} from "bargaz/shutdownCoordinator.js";
-
+import {startDataCleanup, stopDataCleanup}                           from "./dataCleanup.js";
 
 
 // Create a server for runtime/endpoints
@@ -98,12 +98,19 @@ function closeBotServices() {
     console.log("Stopping BargazBot services.");
 
     platformManager.stopPlatformManager();
+    stopDataCleanup();
     commands.stopCommandCollectors();
 
-    await Promise.all([
+    const stopping = await Promise.allSettled([
       stopUpsNotifier(),
       stopDiagnosticsNotifier()
     ]);
+
+    for (const result of stopping) {
+      if (result.status === "rejected") {
+        console.error("Failed to stop a notifier:", result.reason);
+      }
+    }
 
     await drainBotTasks();
     await platformManager.drainPlatformJobs();
@@ -193,16 +200,21 @@ onceBotEvent("clientReady", async () => {
   startUpsNotifier(client);
   startDiagnosticsNotifier();
   console.log(`Logged in as ${client.user.tag}!`);
-
+  const memberLists = new Map();
+  let membershipComplete = true;
   for (const guild of client.guilds.cache.values()) {
     try {
       const members = await guild.members.fetch();
+      const memberIds = new Set();
       for (const member of members.values()){
         if (member.user.bot){ continue; }
         entitlements.ensureUser( member.user );
+        entitlements.ensureGuildMember(guild.id, member.user.id, member.joinedAt);
+        memberIds.add(member.user.id);
       }
       console.log(`Registered ${members.filter(member => !member.user.bot).size} users from ${guild.name}.`);
-    } catch (error) { console.error(`Failed to register users from ${guild.anme}:`,error);
+      memberLists.set(guild.id, memberIds);
+    } catch (error) { console.error(`Failed to register users from ${guild.name}:`,error); membershipComplete = false;
   }
 }
 
@@ -212,7 +224,9 @@ for (const guild of client.guilds.cache.values()) {
     await reconcileGuildAllocations(guild);
   } catch (error) {console.error(`Failed to reconcile allocations for ${guild.id}:`, error);}
 }
-  if (isShutdownRequested()) {return;}
+
+  startDataCleanup(client, {memberLists, membershipComplete});
+
   if (isShutdownRequested()) {return;}
   await commands.registerCommands(client);
   if (isShutdownRequested()) {return;}
@@ -228,9 +242,8 @@ onBotEvent(
       return;
     }
 
-    entitlements.ensureUser(
-      member.user
-    );
+    entitlements.ensureUser(member.user);
+    entitlements.ensureGuildMember(member.guild.id, member.user.id, member.joinedAt);
   }
 );
 
@@ -241,6 +254,7 @@ onBotEvent("guildMemberUpdate", async (oldMember, newMember) => {
     const previouslyAllowed = permissions.canUseCommand(oldMember, "entitlement", "allocate");
     const currentlyAllowed  = permissions.canUseCommand(newMember, "entitlement", "allocate");
     if (previouslyAllowed && !currentlyAllowed) {
+      entitlements.removeGuildMember(member.id, member.guild.id);
       entitlements.removeGuildAllocations(newMember.id, newMember.guild.id);
     }
   } catch (error) {console.error("Failed to process member permission changes:", error);}

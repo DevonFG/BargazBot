@@ -6,6 +6,8 @@ export const ACCESS_LEVELS =       {FULL: "full", CONFIGURATION: "configuration"
 export const COMMAND_PERMISSIONS = {
   notification: ["add", "delete", "edit", "message", "channel", "refresh", "list"],
   channels: ["set", "list"],
+  data: ["server"],
+  logging: ["view", "set", "reset"],
   entitlement: ["allocate", "remove", "view"],
   permissions: ["add", "edit", "remove", "list"]
 };
@@ -31,6 +33,26 @@ export function isGuildOwner(member) {
 export function isGuildAdministrator(member) {
   return member?.permissions?.has(PermissionFlagsBits.Administrator) ?? false;
 }
+
+// Server data deletion is limited to the owner and server managers
+// until a permission profile is explicitly granted the flag.
+export function canDeleteServerData(member) {
+  if (!member?.guild) {return false;}
+  if (isGuildOwner(member)) {return true;}
+  if (member.permissions?.has(PermissionFlagsBits.Administrator)) {return true;}
+  if (member.permissions?.has(PermissionFlagsBits.ManageGuild))   {return true;}
+  return hasDataDeletionFlag(member.guild.id, "user", member.id)
+    || [...member.roles.cache.keys()].some(roleId => hasDataDeletionFlag(member.guild.id, "role", roleId));
+}
+
+// Reads the server data deletion flag from one permission profile
+function hasDataDeletionFlag(guildId, type, targetId) {
+  return Boolean(getDB().prepare(`
+    SELECT 1 FROM guild_permission_profiles
+    WHERE guild_id = ? AND permission_type = ? AND target_id = ? AND can_delete_data = 1
+  `).get(guildId, type, targetId));
+}
+
 
 // Retieves all explicit user and role grants applicable to a member
 // member = GuildMember
@@ -204,7 +226,7 @@ export function addPermission(guildId, type, targetId, canManagePermissions = fa
     return {success: false, created: false, updated: false, reason: "custom_profile", permission: existing};
   }
   const accessLevel = canManagePermissions ? ACCESS_LEVELS.FULL : ACCESS_LEVELS.CONFIGURATION;
-  const result = savePermissionProfile(guildId, type, targetId, accessLevel);
+  const result = savePermissionProfile(guildId, type, targetId, accessLevel, [], existing?.canDeleteData);
   return {...result, updated: !!existing && existing.accessLevel !== accessLevel, permission: getPermissionProfile(guildId, type, targetId)};
 }
 
@@ -214,7 +236,7 @@ export function addPermission(guildId, type, targetId, canManagePermissions = fa
 // target_Id = String, Discord user or role ID
 // accessLevel = String, "full", "configuration", or "custom"
 // commands = Array of Strings, selected custom commands
-export function savePermissionProfile(guildId, type, targetId, accessLevel, commands = []) {
+export function savePermissionProfile(guildId, type, targetId, accessLevel, commands = [], canDeleteData = false) {
   validatePermissionType(type);
 
   if (!Object.values(ACCESS_LEVELS).includes(accessLevel)) {throw new Error(`Invalid permission access level: ${accessLevel}`);}
@@ -238,14 +260,15 @@ export function savePermissionProfile(guildId, type, targetId, accessLevel, comm
     `).run(guildId, type, targetId, canManage ? 1 : 0);
     db.prepare(`
       INSERT INTO guild_permission_profiles (
-        guild_id, permission_type, target_id, access_level, updated_at
+        guild_id, permission_type, target_id, access_level, can_delete_data, updated_at
       )
-      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(guild_id, permission_type, target_id)
       DO UPDATE SET
         access_level = excluded.access_level,
+        can_delete_data = excluded.can_delete_data,
         updated_at = CURRENT_TIMESTAMP
-    `).run(guildId, type, targetId, accessLevel);
+    `).run(guildId, type, targetId, accessLevel, canDeleteData ? 1 : 0);
     db.prepare(`
       DELETE FROM guild_command_permissions
       WHERE guild_id = ? AND permission_type = ? AND target_id = ?
@@ -260,7 +283,7 @@ export function savePermissionProfile(guildId, type, targetId, accessLevel, comm
 
     for (const command of selectedCommands) {insert.run(guildId, type, targetId, command);}
 
-    return {success: true, created: !existing, updated: !!existing, accessLevel, commands: selectedCommands};
+    return {success: true, created: !existing, updated: !!existing, accessLevel, canDeleteData, commands: selectedCommands};
   });
   return save();
 }
@@ -276,7 +299,7 @@ export function getPermissionProfile(guildId, type, targetId) {
   if (!permission) { return null; }
 
   const accessLevel = getAccessLevel(guildId, type, targetId);
-  return {...permission, accessLevel, commands: accessLevel === ACCESS_LEVELS.CUSTOM ? getCustomCommands(guildId, type, targetId) : []};
+  return {...permission, accessLevel, canDeleteData: hasDataDeletionFlag(guildId, type, targetId), commands: accessLevel === ACCESS_LEVELS.CUSTOM ? getCustomCommands(guildId, type, targetId) : []};
 }
 
 // Legacy function for changing whether an existing grant includes permission-management access
@@ -284,11 +307,11 @@ export function getPermissionProfile(guildId, type, targetId) {
 // type = String, "user" or "role"
 // targetId = String, Discord user or role ID
 // canManagePermissions = Boolean
-export function setPermissionManagement(guildId, type, targetId, canManagePermissions) {
+export function setPermissionManagement(guildId, type, targetId, canManagePermissions){
   const existing = getPermissionProfile(guildId, type, targetId);
   if (!existing || existing.accessLevel === ACCESS_LEVELS.CUSTOM) {return false;}
   const accessLevel = canManagePermissions ? ACCESS_LEVELS.FULL : ACCESS_LEVELS.CONFIGURATION;
-  savePermissionProfile(guildId, type, targetId, accessLevel);
+  savePermissionProfile(guildId, type, targetId, accessLevel, [], existing.canDeleteData);
   return true;
 }
 
@@ -326,7 +349,7 @@ export function getPermissions(guildId) {
   `).all(guildId);
   return entries.map(entry => {
     const accessLevel = getAccessLevel(guildId, entry.permission_type, entry.target_id);
-    return {...entry, accessLevel, commands: accessLevel === ACCESS_LEVELS.CUSTOM ? getCustomCommands(guildId, entry.permission_type, entry.target_id) : []};
+    return {...entry, accessLevel, canDeleteData: hasDataDeletionFlag(guildId, entry.permission_type, entry.target_id), commands: accessLevel === ACCESS_LEVELS.CUSTOM ? getCustomCommands(guildId, entry.permission_type, entry.target_id) : []};
   });
 }
 

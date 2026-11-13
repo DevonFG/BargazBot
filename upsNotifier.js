@@ -1,12 +1,5 @@
 import {startUpsMonitor} from "bargaz/upsMonitor.js";
-
-import {
-  beginShutdown,
-  addShutdownBlocker,
-  removeShutdownBlocker,
-  isShutdownRequested
-} from "bargaz/shutdownCoordinator.js";
-
+import {beginShutdown, addShutdownBlocker, removeShutdownBlocker, isShutdownRequested} from "bargaz/shutdownCoordinator.js";
 import {getOwnerStatusChannel} from "./owner.js";
 
 const BATTERY_UPDATE_INTERVAL_MS = 15 * 60 * 1000;
@@ -18,11 +11,6 @@ let lastBatteryUpdate = null;
 
 function networkMessage(network, connected) {
   let message = "\n\n**Network Status**\n";
-
-  if (!connected) {
-    message += "Connection: **No usable internet connection**";
-    return message;
-  }
 
   message += `Connection: **${network.name}**`;
 
@@ -159,7 +147,7 @@ export function startUpsNotifier(client) {
       const sent = await sendOrEditUpsMessage(
         channel,
         client,
-        powerMessage + networkMessage(network, network.connected)
+        powerMessage + networkMessage(network)
       );
 
       if (sent) {
