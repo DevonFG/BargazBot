@@ -19,6 +19,11 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.10.1 - Nov 13
+- Removed index.html, privacy.html, and tos.html
+- Changed README so the license now points to the new legal page
+- Deleted the restore copies in databases/ and databases/backups/ and the partial backup files fron the 10th
+
 ## v26.10.0 - Nov 12
 - Fixed Kick notifications (multiple parameters corrected and used the refresh feature to confirm)
 - Fixed /pewrmissions remove failing before it could show a preview

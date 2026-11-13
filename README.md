@@ -55,6 +55,6 @@ Environment files, credentials, databases, local configuration, logs, and PM2 ru
 
 ## License
 
-A license for Bargaz, BargazBot, and BargazLive has not yet been selected. Once selected, it will be posted at [bargaz.app/license](https://bargaz.app/license).
+A license for Bargaz, BargazBot, and BargazLive has not yet been selected. Once selected, it will be posted at [bargaz.app/legal](https://bargaz.app/legal).
 
 Third-party dependencies retain their respective licenses.
