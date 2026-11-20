@@ -12,6 +12,7 @@ import * as owner           from "./owner.js";
 import * as platformManager from "./platformManager.js";
 import * as entitlements    from "./entitlements.js";
 import * as permissions     from "./permissions.js";
+import * as feedback        from "./feedback.js";
 
 import {startUpsNotifier, stopUpsNotifier}                           from "./upsNotifier.js";
 import {startDiagnosticsNotifier, stopDiagnosticsNotifier}           from "./diagnosticsNotifier.js";
@@ -23,7 +24,7 @@ import {startDataCleanup, stopDataCleanup}                           from "./dat
 
 // Create a server for runtime/endpoints
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3500;
 
 app.get("/", (req, res) => { res.status(200).send("Bargaz-Bot online"); });
 app.get("/health", (req, res) => {
@@ -36,8 +37,10 @@ app.get("/health", (req, res) => {
   });
 });
 
+feedback.registerRoutes(app);
+
 // Start server
-const server = app.listen(PORT, () => {console.log(`Health server listening on ${PORT}`);});
+const server = app.listen(PORT, "127.0.0.1", () => {console.log(`Health and feedback server listening on 127.0.0.1:${PORT}`);});
 
 // Set up the Discord client with the permissions it needs
 const client = new discord.Client({
@@ -48,6 +51,8 @@ const client = new discord.Client({
     discord.GatewayIntentBits.GuildMembers   // allows bot to see members
   ]
 });
+
+feedback.initFeedback(client);
 
 function onBotEvent(event, handler)   {client.on(event, trackBotCallback(handler));}
 function onceBotEvent(event, handler) {client.once(event, trackBotCallback(handler));}
@@ -313,6 +318,7 @@ onBotEvent("guildCreate", async (guild) => {
 
 onBotEvent("messageCreate", async message => {
   if (isShutdownRequested()) {return;}
+  await feedback.handleReply(message);
   await owner.handleOwnerMessage(message);
 });
 

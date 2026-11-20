@@ -19,6 +19,13 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.10.2-dev.1 - Nov 20
+This update msotly exists for a BargazLive update rather than a BargazBot update
+- Feedback form now has backend processes to post messages/tags/emojis/ect in the forums feedback channel in discord
+- Reply notifications by email will go through Resend
+- Internal HTTP server now binds to 127.0.0.1:3500 by default and is used by the feedback API
+- updated evn example with feedback forum, data file, base URL, and Resend settings
+
 ## v26.10.1 - Nov 13
 - Removed index.html, privacy.html, and tos.html
 - Changed README so the license now points to the new legal page
