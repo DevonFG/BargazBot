@@ -1,17 +1,22 @@
-import { getDB } from "./storage.js";
 import { PermissionFlagsBits } from "discord.js";
+import * as log from "./appLogger.js";
+import { getDB } from "./storage.js";
 
 export const PERMISSION_TYPES =    {USER: "user", ROLE: "role"};
 export const ACCESS_LEVELS =       {FULL: "full", CONFIGURATION: "configuration", CUSTOM: "custom"};
 export const COMMAND_PERMISSIONS = {
-  notification: ["add", "delete", "edit", "message", "channel", "refresh", "list", "groups"],
-  channels: ["set", "list"],
-  data: ["server"],
-  logging: ["view", "set", "reset"],
-  entitlement: ["allocate", "remove", "view"],
-  permissions: ["add", "edit", "remove", "list"]
+  notification:      ["add", "delete", "edit", "message", "channel", "refresh", "list", "groups", "test"],
+  "features-config": ["setup"],
+  logging:           ["view", "set", "reset"],
+  data:              ["server"],
+  entitlement:       ["allocate", "remove", "view"],
+  inactivity:        ["setup"],
+  timers:            ["setup"],
+  autopublish:       ["setup"],
+  permissions:       ["add", "edit", "remove", "list"]
 };
 export const PUBLIC_COMMANDS = ["ping", "help"];
+const PUBLIC_SUBCOMMANDS = ["permissions.list"];
 
 // Prevents invalid permission types from being stored in a database
 // type = String, "user" or "role"
@@ -25,10 +30,10 @@ function validatePermissionType(type) {
 // member = GuildMember
 export function isGuildOwner(member) {
   if (!member?.guild) {return false;}
-  return (member.id === member.guild.ownerId);
+  return member.id === member.guild.ownerId;
 }
 
-//Checks if the Discord member has Administrator permissions
+// Checks if the Discord member has Administrator permissions
 // member = GuildMember
 export function isGuildAdministrator(member) {
   return member?.permissions?.has(PermissionFlagsBits.Administrator) ?? false;
@@ -53,8 +58,7 @@ function hasDataDeletionFlag(guildId, type, targetId) {
   `).get(guildId, type, targetId));
 }
 
-
-// Retieves all explicit user and role grants applicable to a member
+// Retrieves all explicit user and role grants applicable to a member
 // member = GuildMember
 function getMemberPermissionEntries(member) {
   if (!member?.guild) {return [];}
@@ -76,9 +80,7 @@ function getMemberPermissionEntries(member) {
   const memberRoleIds   = member.roles?.cache ? [...member.roles.cache.keys()] : Array.isArray(member.roles) ? member.roles : [];
   const roleIds         = [...new Set([member.guild.id, ...memberRoleIds])];
   if (roleIds.length === 0) {return entries;}
-  const placeholders    = roleIds
-    .map(() => "?")
-    .join(", ");
+  const placeholders    = roleIds.map(() => "?").join(", ");
   const rolePermissions =
     db.prepare(`
       SELECT
@@ -110,9 +112,9 @@ export function getAccessLevel(guildId, type, targetId) {
       AND target_id = ?
   `).get(guildId, type, targetId);
 
-  if (profile) { return profile.access_level; }
+  if (profile) {return profile.access_level;}
   const legacy = getPermission(guildId, type, targetId);
-  if (!legacy) { return null; }
+  if (!legacy) {return null;}
 
   return Number(legacy.can_manage_permissions) === 1
     ? ACCESS_LEVELS.FULL
@@ -138,11 +140,12 @@ export function getCustomCommands(guildId, type, targetId) {
 
 // Determines whether a member can use a specific BargazBot command
 // member = GuildMember
-// command = String, Main command name i.e: "notification"
-// subcommand = String, Subcommand name i.e: "add"
+// command = String, main command name
+// subcommand = String, subcommand name
 export function canUseCommand(member, command, subcommand = null) {
-  if (!member?.guild) { return false; }
+  if (!member?.guild) {return false;}
   if (PUBLIC_COMMANDS.includes(command)) {return subcommand === null;}
+  if (subcommand && PUBLIC_SUBCOMMANDS.includes(`${command}.${subcommand}`)) {return true;}
   if (!Object.hasOwn(COMMAND_PERMISSIONS, command)) {return false;}
   const allowed = getEffectiveCommands(member);
   if (subcommand) {
@@ -152,7 +155,7 @@ export function canUseCommand(member, command, subcommand = null) {
   return COMMAND_PERMISSIONS[command].some(name => allowed.includes(`${command}.${name}`));
 }
 
-// Validated a custom command selection and applies permission dependencies
+// Validates a custom command selection and applies permission dependencies
 // commands = Array of Strings, command identifiers
 export function normalizeCustomCommands(commands) {
   const valid = new Set(
@@ -160,15 +163,15 @@ export function normalizeCustomCommands(commands) {
       .flatMap(([command, subcommands]) => subcommands.map(subcommand => `${command}.${subcommand}`))
   );
   const selected = new Set(commands.filter(command => valid.has(command)));
-  if (selected.has("entitlement.allocate")) { selected.add("entitlement.remove"); }
+  if (selected.has("entitlement.allocate")) {selected.add("entitlement.remove");}
   return [...selected];
 }
 
 // Calculates the complete set of commands a member can use, combining all applicable grants
 // member = GuildMember
 export function getEffectiveCommands(member) {
-  const allowed = new Set(PUBLIC_COMMANDS);
-  if (!member?.guild) { return [...allowed]; }
+  const allowed = new Set([...PUBLIC_COMMANDS, ...PUBLIC_SUBCOMMANDS]);
+  if (!member?.guild) {return [...allowed];}
   const allCommands = Object.entries(COMMAND_PERMISSIONS)
     .flatMap(([command, subcommands]) => subcommands.map(subcommand => `${command}.${subcommand}`));
   if (isGuildOwner(member) || isGuildAdministrator(member)) {return [...new Set([...allowed, ...allCommands])];}
@@ -176,13 +179,14 @@ export function getEffectiveCommands(member) {
   for (const entry of entries) {
     const level = getAccessLevel(member.guild.id, entry.permission_type, entry.target_id);
     if (level === ACCESS_LEVELS.FULL) {allCommands.forEach(command => allowed.add(command)); break;}
-    if (level === ACCESS_LEVELS.CONFIGURATION) {allCommands
-      .filter(command => !command.startsWith("permissions."))
-      .forEach(command => allowed.add(command));
+    if (level === ACCESS_LEVELS.CONFIGURATION) {
+      allCommands
+        .filter(command => !command.startsWith("permissions."))
+        .forEach(command => allowed.add(command));
     }
     if (level === ACCESS_LEVELS.CUSTOM) {
       normalizeCustomCommands(getCustomCommands(member.guild.id, entry.permission_type, entry.target_id)).forEach(command => {
-        if (allCommands.includes(command)) { allowed.add(command); }
+        if (allCommands.includes(command)) {allowed.add(command);}
       });
     }
   }
@@ -195,7 +199,7 @@ export function getEffectiveCommands(member) {
 // Retrieves the original database record for a user or role
 // guildId = String, Discord Server ID
 // type = String, "user" or "role"
-// target_Id = String, Discord user or role ID
+// targetId = String, Discord user or role ID
 export function getPermission(guildId, type, targetId) {
   validatePermissionType(type);
   const db = getDB();
@@ -230,10 +234,10 @@ export function addPermission(guildId, type, targetId, canManagePermissions = fa
   return {...result, updated: !!existing && existing.accessLevel !== accessLevel, permission: getPermissionProfile(guildId, type, targetId)};
 }
 
-// Creates or update a permission profile, including preset and custom command selection
+// Creates or updates a permission profile, including preset and custom command selection
 // guildId = String, Discord Server ID
 // type = String, "user" or "role"
-// target_Id = String, Discord user or role ID
+// targetId = String, Discord user or role ID
 // accessLevel = String, "full", "configuration", or "custom"
 // commands = Array of Strings, selected custom commands
 export function savePermissionProfile(guildId, type, targetId, accessLevel, commands = [], canDeleteData = false) {
@@ -247,56 +251,64 @@ export function savePermissionProfile(guildId, type, targetId, accessLevel, comm
 
   if (accessLevel === ACCESS_LEVELS.CUSTOM && selectedCommands.length === 0) {throw new Error("Custom Access requires at least one selected command.");}
   const canManage = accessLevel === ACCESS_LEVELS.FULL || (accessLevel === ACCESS_LEVELS.CUSTOM && selectedCommands.some(command => command.startsWith("permissions.") && command !== "permissions.list"));
-  const save = db.transaction(() => {
-    const existing = getPermission(guildId, type, targetId);
-    
-    db.prepare(`
-      INSERT INTO guild_permissions (
-        guild_id, permission_type, target_id, can_manage_permissions
-      )
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(guild_id, permission_type, target_id)
-      DO UPDATE SET can_manage_permissions = excluded.can_manage_permissions
-    `).run(guildId, type, targetId, canManage ? 1 : 0);
-    db.prepare(`
-      INSERT INTO guild_permission_profiles (
-        guild_id, permission_type, target_id, access_level, can_delete_data, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(guild_id, permission_type, target_id)
-      DO UPDATE SET
-        access_level = excluded.access_level,
-        can_delete_data = excluded.can_delete_data,
-        updated_at = CURRENT_TIMESTAMP
-    `).run(guildId, type, targetId, accessLevel, canDeleteData ? 1 : 0);
-    db.prepare(`
-      DELETE FROM guild_command_permissions
-      WHERE guild_id = ? AND permission_type = ? AND target_id = ?
-    `).run(guildId, type, targetId);
 
-    const insert = db.prepare(`
-      INSERT INTO guild_command_permissions (
-        guild_id, permission_type, target_id, command_name, allowed
-      )
-      VALUES (?, ?, ?, ?, 1)
-    `);
+  try {
+    const save = db.transaction(() => {
+      const existing = getPermission(guildId, type, targetId);
 
-    for (const command of selectedCommands) {insert.run(guildId, type, targetId, command);}
+      db.prepare(`
+        INSERT INTO guild_permissions (
+          guild_id, permission_type, target_id, can_manage_permissions
+        )
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(guild_id, permission_type, target_id)
+        DO UPDATE SET can_manage_permissions = excluded.can_manage_permissions
+      `).run(guildId, type, targetId, canManage ? 1 : 0);
+      db.prepare(`
+        INSERT INTO guild_permission_profiles (
+          guild_id, permission_type, target_id, access_level, can_delete_data, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(guild_id, permission_type, target_id)
+        DO UPDATE SET
+          access_level = excluded.access_level,
+          can_delete_data = excluded.can_delete_data,
+          updated_at = CURRENT_TIMESTAMP
+      `).run(guildId, type, targetId, accessLevel, canDeleteData ? 1 : 0);
+      db.prepare(`
+        DELETE FROM guild_command_permissions
+        WHERE guild_id = ? AND permission_type = ? AND target_id = ?
+      `).run(guildId, type, targetId);
 
-    return {success: true, created: !existing, updated: !!existing, accessLevel, canDeleteData, commands: selectedCommands};
-  });
-  return save();
+      const insert = db.prepare(`
+        INSERT INTO guild_command_permissions (
+          guild_id, permission_type, target_id, command_name, allowed
+        )
+        VALUES (?, ?, ?, ?, 1)
+      `);
+
+      for (const command of selectedCommands) {insert.run(guildId, type, targetId, command);}
+
+      return {success: true, created: !existing, updated: !!existing, accessLevel, canDeleteData, commands: selectedCommands};
+    });
+    const result = save();
+    log.info("BargazBot permission profile saved:", guildId, type, targetId, accessLevel, selectedCommands.length, Boolean(canDeleteData));
+    return result;
+  } catch (error) {
+    log.error("BargazBot permission profile save failed:", guildId, type, targetId, error);
+    throw error;
+  }
 }
 
 // Retrieves the completed permission profile
 // guildId = String, Discord Server ID
 // type = String, "user" or "role"
-// target_Id = String, Discord user or role ID
+// targetId = String, Discord user or role ID
 export function getPermissionProfile(guildId, type, targetId) {
   validatePermissionType(type);
 
   const permission = getPermission(guildId, type, targetId);
-  if (!permission) { return null; }
+  if (!permission) {return null;}
 
   const accessLevel = getAccessLevel(guildId, type, targetId);
   return {...permission, accessLevel, canDeleteData: hasDataDeletionFlag(guildId, type, targetId), commands: accessLevel === ACCESS_LEVELS.CUSTOM ? getCustomCommands(guildId, type, targetId) : []};
@@ -307,7 +319,7 @@ export function getPermissionProfile(guildId, type, targetId) {
 // type = String, "user" or "role"
 // targetId = String, Discord user or role ID
 // canManagePermissions = Boolean
-export function setPermissionManagement(guildId, type, targetId, canManagePermissions){
+export function setPermissionManagement(guildId, type, targetId, canManagePermissions) {
   const existing = getPermissionProfile(guildId, type, targetId);
   if (!existing || existing.accessLevel === ACCESS_LEVELS.CUSTOM) {return false;}
   const accessLevel = canManagePermissions ? ACCESS_LEVELS.FULL : ACCESS_LEVELS.CONFIGURATION;
@@ -315,22 +327,28 @@ export function setPermissionManagement(guildId, type, targetId, canManagePermis
   return true;
 }
 
-// Deletes a pre-assigned assigned permission grant
+// Deletes a pre-assigned permission grant
 // guildId = String, Discord Server ID
 // type = String, "user" or "role"
-// target_Id = String, Discord user or role ID
+// targetId = String, Discord user or role ID
 export function removePermission(guildId, type, targetId) {
   validatePermissionType(type);
 
   if (type === PERMISSION_TYPES.ROLE && targetId === guildId) {return false;}
   const db = getDB();
-  const result = db.prepare(`
-    DELETE FROM guild_permissions
-    WHERE guild_id = ?
-      AND permission_type = ?
-      AND target_id = ?
-  `).run(guildId, type, targetId);
-  return result.changes > 0;
+  try {
+    const result = db.prepare(`
+      DELETE FROM guild_permissions
+      WHERE guild_id = ?
+        AND permission_type = ?
+        AND target_id = ?
+    `).run(guildId, type, targetId);
+    if (result.changes > 0) {log.info("BargazBot permission profile removed:", guildId, type, targetId);}
+    return result.changes > 0;
+  } catch (error) {
+    log.error("BargazBot permission profile removal failed:", guildId, type, targetId, error);
+    throw error;
+  }
 }
 
 // Retrieves all authorized users and roles in a Discord server
@@ -356,7 +374,7 @@ export function getPermissions(guildId) {
 // Converts a saved permission profile into a completed list
 // profile = Object
 export function getProfileCommands(profile) {
-  if (!profile) { return []; }
+  if (!profile) {return [];}
   const allCommands = Object.entries(COMMAND_PERMISSIONS)
     .flatMap(([command, subcommands]) => subcommands.map(subcommand => `${command}.${subcommand}`));
   if (profile.accessLevel === ACCESS_LEVELS.FULL) {return allCommands;}
@@ -365,7 +383,7 @@ export function getProfileCommands(profile) {
   return [];
 }
 
-// Compare two permission profiles to identify changes before saving
+// Compares two permission profiles to identify changes before saving
 // oldProfile = Object
 // newProfile = Object
 export function comparePermissionProfiles(oldProfile, newProfile) {
@@ -376,4 +394,29 @@ export function comparePermissionProfiles(oldProfile, newProfile) {
     removed: [...previous].filter(command => !current.has(command)),
     unchanged: [...current].filter(command => previous.has(command))
   };
+}
+
+// Gives the detected installer a normal permission profile during join setup.
+// Existing profiles are never overwritten, and inherited owner/admin access is left alone.
+// guild = Guild
+// installerId = String, Discord user ID
+export function ensureInstallerPermissions(guild, installerId) {
+  if (!guild?.id || !installerId) {return null;}
+  const existing = getPermissionProfile(guild.id, PERMISSION_TYPES.USER, installerId);
+  if (existing) {
+    log.info("BargazBot installer permission profile kept:", guild.id, installerId, existing.accessLevel);
+    return existing;
+  }
+  if (installerId === guild.ownerId) {
+    log.info("BargazBot installer is already the server owner:", guild.id, installerId);
+    return null;
+  }
+  const member = guild.members?.cache?.get(installerId) ?? null;
+  if (member && isGuildAdministrator(member)) {
+    log.info("BargazBot installer is already an administrator:", guild.id, installerId);
+    return null;
+  }
+  savePermissionProfile(guild.id, PERMISSION_TYPES.USER, installerId, ACCESS_LEVELS.CONFIGURATION, [], false);
+  log.info("BargazBot installer permission profile created:", guild.id, installerId);
+  return getPermissionProfile(guild.id, PERMISSION_TYPES.USER, installerId);
 }

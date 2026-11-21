@@ -3,6 +3,11 @@ import * as channelManager   from "./channelManager.js";
 import * as permissions      from "./permissions.js";
 import * as notifications    from "./notifications.js";
 import * as entitlements     from "./entitlements.js";
+import * as log              from "./appLogger.js";
+import * as featureSettings  from "./featureSettings.js";
+import * as inactivity       from "./inactivity.js";
+import * as timers           from "./timers.js";
+import * as autopublish      from "./autopublish.js";
 import fs                    from "node:fs";
 import path                  from "node:path";
 import Database              from "better-sqlite3";
@@ -101,41 +106,17 @@ const commands = [
   //===================================================
   new discord.SlashCommandBuilder()
     .setName("notification")
-    .setDescription("Manage creator notifications from a menu."),
+    .setDescription("Manage creator notifications from a menu.")
+    .addSubcommand(subcommand => subcommand
+      .setName("test")
+      .setDescription("Send a test notification without using the creator APIs.")),
 
   //===================================================
-  // Channel Configuration
+  // Feature Configuration
   //===================================================
   new discord.SlashCommandBuilder()
-    .setName("channels")
-    .setDescription("Configure the channels used by BargazBot.")
-    .addSubcommand(subcommand => subcommand
-      .setName("set")
-      .setDescription("Change the channel used by a feature.")
-      .addStringOption(option => option
-        .setName("purpose")
-        .setDescription("The feature to configure.")
-        .setRequired(true)
-        .addChoices(
-          {name:"Creator notification fallback", value:"notifications"},
-          {name:"Welcome messages",              value:"welcome"},
-          {name:"Goodbye messages",              value:"goodbye"},
-          {name:"Server logs",                   value:"logs"},
-          {name:"BargazBot updates",             value:"updates"},
-          {name:"BargazBot status",              value:"status"}
-        )
-      )
-      .addChannelOption(option => option
-        .setName("channel")
-        .setDescription("The channel to use for this feature.")
-        .addChannelTypes(discord.ChannelType.GuildText, discord.ChannelType.GuildAnnouncement)
-        .setRequired(true)
-      )
-    )
-    .addSubcommand(subcommand => subcommand
-      .setName("list")
-      .setDescription("Show the channels currently used by BargazBot.")
-    ),
+    .setName("features-config")
+    .setDescription("Open the BargazBot feature, channel, welcome, and response setup menu."),
 
   //===================================================
   // Logging
@@ -201,7 +182,8 @@ const commands = [
         .setRequired(true)
         .addChoices(
           {name:"You",         value:"user"},
-          {name:"This server", value:"server"}
+          {name:"This server", value:"server"},
+          {name:"This DM",     value:"dm"}
         )
       )
     )
@@ -283,43 +265,43 @@ const commands = [
   //===================================================
   // Permissions
   //===================================================
-    new discord.SlashCommandBuilder()
-      .setName("permissions")
-      .setDescription("Manage access to BargazBot commands.")
-      .addSubcommand(subcommand => subcommand
-        .setName("add")
-        .setDescription("Grant a user or role access to BargazBot.")
-        .addMentionableOption(option => option
-          .setName("target")
-          .setDescription("The user or role to authorize.")
-          .setRequired(false))
-        .addBooleanOption(option => option
-          .setName("everyone")
-          .setDescription("Authorize the @everyone role instead.")
-          .setRequired(false)))
-      .addSubcommand(subcommand => subcommand
-        .setName("edit")
-        .setDescription("Edit an existing user or role permission profile.")
-        .addMentionableOption(option => option
-          .setName("target")
-          .setDescription("The user or role to edit.")
-          .setRequired(false))
-        .addBooleanOption(option => option
-          .setName("everyone")
-          .setDescription("Edit the @everyone role instead.")
-          .setRequired(false)))
-      .addSubcommand(subcommand => subcommand
-        .setName("remove")
-        .setDescription("Remove an explicitly assigned user or role permission.")
-        .addMentionableOption(option => option
-          .setName("target")
-          .setDescription("The user or role to remove.")
-          .setRequired(true)))
-      .addSubcommand(subcommand => subcommand
-        .setName("list")
-        .setDescription("View inherited, assigned, and public BargazBot permissions."))
-];
+  new discord.SlashCommandBuilder()
+    .setName("permissions")
+    .setDescription("Open the BargazBot permissions menu."),
 
+  //===================================================
+  // Inactivity / Timers / Auto Publish / DMs
+  //===================================================
+  new discord.SlashCommandBuilder()
+    .setName("inactivity")
+    .setDescription("Configure inactivity alerts for channels or this server."),
+  new discord.SlashCommandBuilder()
+    .setName("timers")
+    .setDescription("Manage reminders, recurring timers, and birthday announcements."),
+  new discord.SlashCommandBuilder()
+    .setName("autopublish")
+    .setDescription("Publish messages from announcement channels.")
+    .addStringOption(option => option
+      .setName("mode")
+      .setDescription("What to publish.")
+      .setRequired(true)
+      .addChoices(
+        {name:"Channel",                      value:"channel"},
+        {name:"All announcement channels",    value:"all"},
+        {name:"List configured channels",     value:"list"}
+      )
+    )
+    .addChannelOption(option => option
+      .setName("channel")
+      .setDescription("The announcement channel to publish in or configure.")
+      .addChannelTypes(discord.ChannelType.GuildAnnouncement)
+      .setRequired(false)
+    ),
+  new discord.SlashCommandBuilder()
+    .setName("dm")
+    .setDescription("Configure your personal BargazBot direct messages."),
+
+]
 // Registers BargazBot's slash commands with Discord
 // client = Discord Client
 export async function registerCommands(client) {
@@ -336,19 +318,23 @@ export async function handleInteraction(interaction) {
     if (interaction.guild) {channelManager.ensureGuildData(interaction.guild);}
     entitlements.ensureUser(interaction.user);
     switch (interaction.commandName) {
-      case "ping":         await handlePing(interaction); break;
-      case "help":         await handleHelp(interaction); break;
-      case "channels":     await handleChannels(interaction); break;
-      case "logging":      await handleLogging(interaction); break;
-      case "data":         await handleData(interaction); break;
-      case "entitlement":  await handleEntitlement(interaction); break;
-      case "permissions":  await handlePermissions(interaction); break;
-      case "notification": await handleNotification(interaction); break;
+      case "ping":            await handlePing(interaction); break;
+      case "help":            await handleHelp(interaction); break;
+      case "features-config": await handleFeaturesConfig(interaction); break;
+      case "logging":         await handleLogging(interaction); break;
+      case "data":            await handleData(interaction); break;
+      case "entitlement":     await handleEntitlement(interaction); break;
+      case "permissions":     await handlePermissions(interaction); break;
+      case "notification":    await handleNotification(interaction); break;
+      case "inactivity":      await handleInactivity(interaction); break;
+      case "timers":          await handleTimers(interaction); break;
+      case "autopublish":     await handleAutopublish(interaction); break;
+      case "dm":              await handleDm(interaction); break;
       default: await interaction.reply({content: "BargazBot does not recognize this command.", flags: discord.MessageFlags.Ephemeral});
     }
     if (interaction.guild) {await logging.logCommand(interaction);}
   } catch (error) {
-    console.error(`Error handling /${interaction.commandName}:`,error);
+    log.error("Error handling /" + interaction.commandName + ":", error);
     const response = {
       content:"BargazBot encountered an error while processing that command.",
       flags: discord.MessageFlags.Ephemeral
@@ -446,53 +432,246 @@ async function handleHelp(interaction) {
   await interaction.reply({embeds:[embed], flags:discord.MessageFlags.Ephemeral});
 }
 
-// Routes channel commands after checking individual access
-// interaction = ChatInputCommandInteraction
-async function handleChannels(interaction) {
-  const subcommand = interaction.options.getSubcommand();
-  if (!await requireCommandAccess(interaction, "channels", subcommand)) {return;}
-  switch (subcommand) {
-    case "set": await handleChannelSet(interaction); break;
-    case "list": await handleChannelList(interaction); break;
+const FEATURE_LABELS = {
+  notifications:"Creator notifications", welcome:"Welcome messages", goodbye:"Goodbye messages",
+  logs:"Server logs", updates:"BargazBot updates", status:"Status",
+  inactivity:"Inactivity alerts", timers:"Timers and reminders", birthdays:"Birthday announcements",
+  autopublish:"Auto publish", dm:"Direct messages"
+};
+
+const CHANNEL_PURPOSES = [
+  ["notifications", "Creator notification fallback", "announcement_channel_id"],
+  ["welcome",       "Welcome messages",              "welcome_channel_id"],
+  ["goodbye",       "Goodbye messages",              "goodbye_channel_id"],
+  ["logs",          "Server logs",                   "logs_channel_id"],
+  ["updates",       "BargazBot updates",             "updates_channel_id"],
+  ["status",        "Status",                        "status_channel_id"]
+];
+
+function featureChannelRows(guildId) {
+  const settings = channelManager.getChannelAssignments(guildId) ?? {};
+  return [
+    menuOption("Channels", "channels", "Assign the feature channels"),
+    menuOption("Features", "features", "Toggle features and set response types"),
+    menuOption("Responses", "responses", "Command default and all-but-default response types"),
+    menuOption("Welcome message", "welcome", "Set the one-time joining message"),
+    menuOption("Reset setup", "reset", "Clear this server's setup so join setup runs again")
+  ];
+}
+
+function renderFeatureChannelMenu(guildId, state) {
+  const embed = new discord.EmbedBuilder()
+    .setTitle("BargazBot Features")
+    .setColor(0x5865F2)
+    .setTimestamp();
+  let rows = [];
+
+  if (state.page === "home") {
+    const settings = channelManager.getChannelAssignments(guildId) ?? {};
+    const summary = CHANNEL_PURPOSES
+      .map(([, label, key]) => `${label}: ${settings[key] ? `<#${settings[key]}>` : "Not set"}`)
+      .join("\n");
+    const featureLines = featureSettings.FEATURE_KEYS
+      .map(key => `${featureSettings.isFeatureEnabled(guildId, key) ? "✅" : "❌"} ${FEATURE_LABELS[key] ?? key} — ${featureSettings.getFeatureResponseType(guildId, key) ?? "none"}`)
+      .join("\n");
+    embed.setDescription((state.status ? `${state.status}\n\n` : "") +
+      `**Channels**\n${summary}\n\n**Features**\n${featureLines}`);
+    rows = [buildSelectRow(menuId("features-config","home"), featureChannelRows(guildId), {placeholder:"Choose a setup area"})];
   }
+
+  if (state.page === "channels") {
+    const settings = channelManager.getChannelAssignments(guildId) ?? {};
+    embed.setDescription("Pick a feature, then pick a channel. Use **Clear** to unset it.");
+    rows = [
+      buildSelectRow(menuId("features-config","channels"), CHANNEL_PURPOSES.map(([key,label]) =>
+        menuOption(label, key, settings[CHANNEL_PURPOSES.find(row => row[0] === key)[2]] ? "Configured" : "Not set")
+      ), {placeholder:"Choose a feature channel"}),
+      buildButtonRow([{customId:menuId("features-config","channels","back"), label:"Back", style:"secondary"}])
+    ];
+  }
+
+  if (state.page === "channels-pick") {
+    const purpose = CHANNEL_PURPOSES.find(row => row[0] === state.purpose);
+    embed.setDescription(`Choose the channel for **${purpose[1]}**.`);
+    rows = [
+      buildSelectRow(menuId("features-config","channels","pick"), [
+        menuOption("Clear (unset)", "clear", "Remove this channel assignment"),
+        ...[...state.guild.channels.cache.values()]
+          .filter(channel => channel.isTextBased() && [discord.ChannelType.GuildText, discord.ChannelType.GuildAnnouncement].includes(channel.type))
+          .slice(0, 24)
+          .map(channel => menuOption(channel.name, channel.id))
+      ], {placeholder:"Choose a channel"}),
+      buildButtonRow([{customId:menuId("features-config","channels","pick","back"), label:"Back", style:"secondary"}])
+    ];
+  }
+
+  if (state.page === "features") {
+    embed.setDescription("Select features to toggle together. Logging, updates, and status are on by default.");
+    rows = [
+      buildSelectRow(menuId("features-config","features"), featureSettings.FEATURE_KEYS.map(key =>
+        menuOption(FEATURE_LABELS[key] ?? key, key, featureSettings.isFeatureEnabled(guildId, key) ? "On" : "Off", featureSettings.isFeatureEnabled(guildId, key))
+      ), {placeholder:"Choose features", minValues:1, maxValues:Math.min(featureSettings.FEATURE_KEYS.length,25)}),
+      buildSelectRow(menuId("features-config","features","toggle"), [
+        menuOption("Turn selected on", "on"),
+        menuOption("Turn selected off", "off"),
+        menuOption("Reset all to defaults", "reset")
+      ], {placeholder:"Apply to selected features"}),
+      buildSelectRow(menuId("features-config","features","response"), [
+        menuOption("Message", "message", "Visible to everyone"),
+        menuOption("Ephemeral", "ephemeral", "Only the command user sees it")
+      ], {placeholder:"Set response type for selected features"}),
+      buildButtonRow([{customId:menuId("features-config","features","back"), label:"Back", style:"secondary"}])
+    ];
+  }
+
+  if (state.page === "responses") {
+    embed.setDescription(
+      `Command default: **${featureSettings.getCommandResponseType(guildId)}**\n\n` +
+      "Changing all response types does not change the command default."
+    );
+    rows = [
+      buildSelectRow(menuId("features-config","responses","command"), [
+        menuOption("Message", "message", "Visible command replies"),
+        menuOption("Ephemeral", "ephemeral", "Private command replies")
+      ], {placeholder:"Set command default"}),
+      buildSelectRow(menuId("features-config","responses","all"), [
+        menuOption("All features → message", "message"),
+        menuOption("All features → ephemeral", "ephemeral")
+      ], {placeholder:"Set all feature response types (except command default)"}),
+      buildButtonRow([{customId:menuId("features-config","responses","back"), label:"Back", style:"secondary"}])
+    ];
+  }
+
+  if (state.page === "welcome") {
+    embed.setDescription("The welcome message is sent once, when the bot joins. It supports no placeholders. Leave blank to use the default.");
+    rows = [
+      buildButtonRow([
+        {customId:menuId("features-config","welcome","edit"), label:"Edit welcome message", style:"primary"},
+        {customId:menuId("features-config","welcome","back"), label:"Back", style:"secondary"}
+      ])
+    ];
+  }
+
+  return {embeds:[embed], components:rows, flags:discord.MessageFlags.Ephemeral};
 }
 
-// Sets a server channel for a BargazBot feature
-// interaction = ChatInputCommandInteraction
-async function handleChannelSet(interaction) {
-  const purpose = interaction.options.getString("purpose", true);
-  const channel = interaction.options.getChannel("channel", true);
-  channelManager.setChannel(interaction.guild.id, purpose, channel.id);
-  await logging.logConfigurationChange(interaction.guild,{
-    user:interaction.user,
-    title:"BargazBot Channel Changed",
-    description:`${interaction.user} changed a BargazBot channel setting.`,
-    fields: [
-        {name:"Purpose",     value:purpose,      inline:true},
-        {name:"New Channel", value:`${channel}`, inline: true}
-      ]
+async function handleFeaturesConfig(interaction) {
+  if (!await requireCommandAccess(interaction, "features-config", "setup")) {return;}
+  const state = {page:"home", purpose:null, status:null, features:[]};
+  const render = () => ({...renderFeatureChannelMenu(interaction.guild.id, state), guild:interaction.guild});
+  await interaction.deferReply({flags:discord.MessageFlags.Ephemeral});
+  const reply = await interaction.editReply(renderFeatureChannelMenu(interaction.guild.id, state));
+
+  const collector = createCommandCollector(reply, {time:300000});
+  onCommandComponent(collector, async component => {
+    if (component.user.id !== interaction.user.id) {await component.reply({content:"Only the person who opened this menu can use it.", flags:discord.MessageFlags.Ephemeral}); return;}
+    const parts = parseMenuId(component.customId);
+    const action = parts[1];
+    try {
+      if (action === "back") {state.page = "home"; state.status = null; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+
+      if (action === "home") {
+        const choice = component.values?.[0];
+        state.status = null;
+        state.page = choice === "home" ? "home" : choice;
+        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
+        return;
+      }
+
+      if (action === "channels" && parts[2] !== "pick") {
+        if (parts[2] === "back") {state.page = "home"; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+        state.purpose = component.values?.[0];
+        state.page = "channels-pick";
+        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
+        return;
+      }
+
+      if (action === "channels" && parts[2] === "pick") {
+        if (parts[3] === "back") {state.page = "channels"; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+        const purpose = CHANNEL_PURPOSES.find(row => row[0] === state.purpose);
+        const channelId = component.values?.[0] === "clear" ? null : component.values?.[0];
+        channelManager.setChannel(interaction.guild.id, state.purpose, channelId);
+        await logging.logConfigurationChange(interaction.guild, {
+          user:interaction.user,
+          title:"BargazBot Channel Changed",
+          description:`${interaction.user} changed a BargazBot channel setting.`,
+          fields:[{name:"Purpose", value:purpose[1], inline:true}, {name:"Channel", value:channelId ? `<#${channelId}>` : "Cleared", inline:true}]
+        });
+        state.status = `Updated **${purpose[1]}**.`;
+        state.page = "home";
+        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
+        return;
+      }
+
+      if (action === "features") {
+        if (parts[2] === "back") {state.page = "home"; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+        if (component.values && !parts[2]) {state.features = component.values ?? []; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+        const choice = component.values?.[0];
+        if (parts[2] === "toggle") {
+          if (choice === "reset") {featureSettings.resetFeatureSettings(interaction.guild.id, interaction.user.id); state.status = "Feature settings restored to defaults.";}
+          else {for (const feature of state.features) {featureSettings.setFeatureEnabled(interaction.guild.id, feature, choice === "on", interaction.user.id);} state.status = `Updated ${state.features.length} feature(s).`;}
+        }
+        if (parts[2] === "response") {
+          for (const feature of state.features) {featureSettings.setFeatureReplyType(interaction.guild.id, feature, choice, interaction.user.id);}
+          state.status = `Set response type for ${state.features.length} feature(s).`;
+        }
+        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
+        return;
+      }
+
+      if (action === "responses") {
+        if (parts[2] === "back") {state.page = "home"; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+        const choice = component.values?.[0];
+        if (parts[2] === "command") {featureSettings.updateCommandReplyType(interaction.guild.id, choice, interaction.user.id); state.status = `Command default is now **${choice}**.`;}
+        if (parts[2] === "all") {featureSettings.setAllFeatureReplyTypes(interaction.guild.id, choice, interaction.user.id); state.status = `All feature response types are now **${choice}**.`;}
+        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
+        return;
+      }
+
+      if (action === "welcome") {
+        if (parts[2] === "back") {state.page = "home"; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+        if (parts[2] === "edit") {
+          const customId = menuId("features-config","welcome","form");
+          const submitted = component.awaitModalSubmit({filter:item => item.customId === customId && item.user.id === component.user.id, time:300000}).catch(() => null);
+          await component.showModal(new discord.ModalBuilder()
+            .setCustomId(customId)
+            .setTitle("Welcome message")
+            .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+              .setCustomId("message")
+              .setLabel("Message shown once when the bot joins")
+              .setStyle(discord.TextInputStyle.Paragraph)
+              .setValue(featureSettings.getGuildWelcomeMessage(interaction.guild.id) ?? "")
+              .setRequired(false)
+              .setMaxLength(2000)
+            ))
+          );
+          if (!submitted) {return;}
+          const message = submitted.fields.getTextInputValue("message").trim() || null;
+          featureSettings.updateGuildWelcomeMessage(interaction.guild.id, message, interaction.user.id);
+          state.status = message ? "Welcome message saved." : "Welcome message cleared.";
+          state.page = "home";
+          await submitted.reply({content:state.status, flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+          await interaction.editReply(renderFeatureChannelMenu(interaction.guild.id, state)).catch(() => {});
+          return;
+        }
+      }
+
+      if (action === "reset") {
+        featureSettings.resetGuildSetup(interaction.guild.id);
+        state.status = "Setup cleared. The next join or data deletion will run setup again.";
+        state.page = "home";
+        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
+        return;
+      }
+
+      await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
+    } catch (error) {
+      log.error("Feature configuration menu error:", error);
+      await component.reply({content:"The feature menu encountered an error.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+      collector.stop("error");
+    }
   });
-  await interaction.reply({content:`The **${purpose}** channel has been changed to ${channel}.`, flags:discord.MessageFlags.Ephemeral});
-}
-
-// Displays the server's configured BargazBot channels
-// interaction = ChatInputCommandInteraction
-async function handleChannelList(interaction) {
-  const settings = channelManager.getChannelAssignments(interaction.guild.id);
-  const formatChannel = channelId => channelId? `<#${channelId}>` : "Not configured";
-  const embed =
-    new discord.EmbedBuilder()
-      .setTitle("BargazBot Channels")
-      .addFields(
-        {name:"Creator notification fallback", value:formatChannel(settings?.announcement_channel_id)},
-        {name:"Welcome messages",              value:formatChannel(settings?.welcome_channel_id)},
-        {name:"Goodbye messages",              value:formatChannel(settings?.goodbye_channel_id)},
-        {name:"Server logs",                   value:formatChannel(settings?.logs_channel_id)},
-        {name:"BargazBot Updates",             value:formatChannel(settings?.updates_channel_id)},
-        {name:"Status",                        value:formatChannel(settings?.status_channel_id)}
-      )
-      .setTimestamp();
-  await interaction.reply({embeds: [embed], flags:discord.MessageFlags.Ephemeral});
+  collector.on("end", async () => {await interaction.editReply({components:[]}).catch(() => {});});
 }
 
 // Builds the logging category choices from the shared logger definition
@@ -913,7 +1092,14 @@ async function sendServerDeletionLog(interaction, logsChannelId, removed, leave)
 // Routes deletion for member or server scope
 // interaction = ChatInputCommandInteraction
 async function handleDataDelete(interaction) {
-  if (interaction.options.getString("scope") === "server") {await handleDataServerDelete(interaction); return;}
+  const scope = interaction.options.getString("scope");
+  if (scope === "server") {await handleDataServerDelete(interaction); return;}
+  if (scope === "dm") {
+    featureSettings.resetUserDmSettings(interaction.user.id, interaction.user.id);
+    log.info("BargazBot DM data cleared:", interaction.user.id);
+    await interaction.reply({content:"Your BargazBot DM settings, subscriptions, and message configs were deleted.", flags:discord.MessageFlags.Ephemeral});
+    return;
+  }
   await handleDataUserDelete(interaction);
 }
 
@@ -1390,6 +1576,7 @@ function permissionTargetMention(type, id) {return type === permissions.PERMISSI
 // Retrieves a user or role selected for permission management
 // interaction = ChatInputCommandInteraction
 function getPermissionTarget(interaction) {
+  if (interaction.__permissionTarget) {return interaction.__permissionTarget;}
   const everyone = interaction.options.getBoolean("everyone") ?? false;
   const target   = interaction.options.getMentionable("target");
   if (everyone && target) {return {error: "Select either a user/role or @everyone, not both."};}
@@ -1526,15 +1713,72 @@ function cleanupRevokedAllocations(snapshot) {
 
 // Routes the four permission commands
 // interaction = ChatInputCommandInteraction
+async function sendPermissionResponse(interaction, payload) {
+  if (interaction.replied || interaction.deferred) {return interaction.editReply(payload);}
+  return interaction.reply(payload);
+}
+
 async function handlePermissions(interaction) {
-  const subcommand = interaction.options.getSubcommand();
-  if (!await requireCommandAccess(interaction, "permissions", subcommand)) {return;}
-  switch (subcommand) {
-    case "add":    await handlePermissionEditor(interaction, false); break;
-    case "edit":   await handlePermissionEditor(interaction, true); break;
-    case "remove": await handlePermissionRemove(interaction); break;
-    case "list":   await handlePermissionList(interaction); break;
-  }
+  if (!await requireCommandAccess(interaction, "permissions", "list")) {return;}
+  const state = {page:"home", action:null};
+  const render = () => {
+    if (state.page === "home") {
+      const embed = new discord.EmbedBuilder()
+        .setTitle("BargazBot Permissions")
+        .setDescription("Choose an action. Target editing keeps the existing review and paginated list.")
+        .setTimestamp();
+      return {embeds:[embed], components:[buildSelectRow(menuId("permissions","home"), [
+        menuOption("Add access", "add", "Grant a user or role access"),
+        menuOption("Edit access", "edit", "Change an existing profile"),
+        menuOption("Remove access", "remove", "Remove an explicit profile"),
+        menuOption("View permissions", "list", "Read-only permission list")
+      ], {placeholder:"Choose an action"})]};
+    }
+    return {content:`Choose a target for **${state.action}**.`, embeds:[], components:[
+      buildMentionableRow(menuId("permissions","target"), {placeholder:"Choose a user or role"}),
+      buildButtonRow([
+        {customId:menuId("permissions","everyone"), label:"@everyone", style:"secondary"},
+        {customId:menuId("permissions","back"), label:"Back", style:"secondary"}
+      ])
+    ]};
+  };
+
+  await sendPermissionResponse(interaction, {...render(), flags:discord.MessageFlags.Ephemeral});
+  const message = interaction.replied ? await interaction.fetchReply() : null;
+  if (!message) {return;}
+  const collector = createCommandCollector(message, {time:300000});
+  onCommandComponent(collector, async component => {
+    if (component.user.id !== interaction.user.id) {await component.reply({content:"Only the person who opened this menu can use it.", flags:discord.MessageFlags.Ephemeral}); return;}
+    if (state.page === "home") {
+      const action = component.values?.[0];
+      if (!action) {return;}
+      if (action === "list") {collector.stop("list"); await component.update({content:"Opening the permission list…", embeds:[], components:[]}).catch(() => {}); await handlePermissionList(interaction); return;}
+      if (!await permissions.canUseCommand(component.member, "permissions", action)) {await component.reply({content:"You do not have permission for that action.", flags:discord.MessageFlags.Ephemeral}); return;}
+      state.action = action;
+      state.page = "target";
+      await component.update(render());
+      return;
+    }
+    if (component.customId.includes("back")) {state.page = "home"; await component.update(render()); return;}
+    let target = null;
+    if (component.customId.includes("everyone")) {
+      target = {type:permissions.PERMISSION_TYPES.ROLE, id:interaction.guild.id, mention:"@everyone"};
+    } else {
+      const id = component.values?.[0];
+      const role = interaction.guild.roles.cache.get(id);
+      const member = role ? null : (interaction.guild.members.cache.get(id) ?? await interaction.guild.members.fetch(id).catch(() => null));
+      if (role) {target = {type:permissions.PERMISSION_TYPES.ROLE, id, mention:`<@&${id}>`};}
+      if (member) {target = {type:permissions.PERMISSION_TYPES.USER, id, mention:`<@${id}>`};}
+    }
+    if (!target) {await component.reply({content:"Choose a user or role.", flags:discord.MessageFlags.Ephemeral}); return;}
+    interaction.__permissionTarget = target;
+    collector.stop("editor");
+    await component.update({content:"Opening the editor…", embeds:[], components:[]}).catch(() => {});
+    if (state.action === "add") {await handlePermissionEditor(interaction, false);}
+    if (state.action === "edit") {await handlePermissionEditor(interaction, true);}
+    if (state.action === "remove") {await handlePermissionRemove(interaction);}
+  });
+  collector.on("end", async (_, reason) => {if (reason === "time") {await interaction.editReply({content:"Permission menu expired.", embeds:[], components:[]}).catch(() => {});}});
 }
 
 // Opens an interactive editor for a user or role
@@ -1542,16 +1786,16 @@ async function handlePermissions(interaction) {
 // editing = Boolean, true for edit and false for add
 async function handlePermissionEditor(interaction, editing) {
   const target = getPermissionTarget(interaction);
-  if (target.error) {await interaction.reply({content: target.error, flags: discord.MessageFlags.Ephemeral}); return;}
+  if (target.error) {await sendPermissionResponse(interaction, {content: target.error, flags: discord.MessageFlags.Ephemeral}); return;}
   const original = permissions.getPermissionProfile(interaction.guild.id, target.type, target.id);
-  if (editing && !original) {await interaction.reply({content: `${target.mention} does not have an explicit permission profile. Use \`/permissions add\` first.`, flags: discord.MessageFlags.Ephemeral}); return;}
-  if (!editing && original) {await interaction.reply({content: `${target.mention} already has a permission profile. Use \`/permissions edit\` instead.`, flags: discord.MessageFlags.Ephemeral}); return;}
+  if (editing && !original) {await sendPermissionResponse(interaction, {content: `${target.mention} does not have an explicit permission profile. Use \`/permissions add\` first.`, flags: discord.MessageFlags.Ephemeral}); return;}
+  if (!editing && original) {await sendPermissionResponse(interaction, {content: `${target.mention} already has a permission profile. Use \`/permissions edit\` instead.`, flags: discord.MessageFlags.Ephemeral}); return;}
   let level          = original?.accessLevel ?? permissions.ACCESS_LEVELS.CONFIGURATION;
   let category       = "notification";
   let selected       = new Set(original?.commands ?? []);
   let canDeleteData  = Boolean(original?.canDeleteData);
   let reviewing      = false;
-  await interaction.reply({...buildPermissionEditor(target, level, category, selected, canDeleteData), flags: discord.MessageFlags.Ephemeral});
+  await sendPermissionResponse(interaction, {...buildPermissionEditor(target, level, category, selected, canDeleteData), flags: discord.MessageFlags.Ephemeral});
   const message = await interaction.fetchReply();
   const collector = createCommandCollector(message, {time: 300000});
   onCommandComponent(collector, async component => {
@@ -1609,15 +1853,15 @@ async function handlePermissionEditor(interaction, editing) {
 // interaction = ChatInputCommandInteraction
 async function handlePermissionRemove(interaction) {
   const target = getPermissionTarget(interaction);
-  if (target.error)                                                                            {await interaction.reply({content: target.error, flags: discord.MessageFlags.Ephemeral}); return;}
-  if (target.type === permissions.PERMISSION_TYPES.ROLE && target.id === interaction.guild.id) {await interaction.reply({content: "The @everyone permission profile cannot be removed. Use `/permissions edit` instead.", flags: discord.MessageFlags.Ephemeral}); return;}
+  if (target.error)                                                                            {await sendPermissionResponse(interaction, {content: target.error, flags: discord.MessageFlags.Ephemeral}); return;}
+  if (target.type === permissions.PERMISSION_TYPES.ROLE && target.id === interaction.guild.id) {await sendPermissionResponse(interaction, {content: "The @everyone permission profile cannot be removed. Use `/permissions edit` instead.", flags: discord.MessageFlags.Ephemeral}); return;}
   const original = permissions.getPermissionProfile(interaction.guild.id, target.type, target.id);
-  if (!original) {await interaction.reply({content: `${target.mention} has no explicit permission profile to remove.`, flags: discord.MessageFlags.Ephemeral}); return;}
+  if (!original) {await sendPermissionResponse(interaction, {content: `${target.mention} has no explicit permission profile to remove.`, flags: discord.MessageFlags.Ephemeral}); return;}
   const buttons = new discord.ActionRowBuilder().addComponents(
     new discord.ButtonBuilder().setCustomId("permission:remove-confirm").setLabel("Remove Permission").setStyle(discord.ButtonStyle.Danger),
     new discord.ButtonBuilder().setCustomId("permission:remove-cancel") .setLabel("Cancel").setStyle(discord.ButtonStyle.Secondary)
   );
-  await interaction.reply({
+  await sendPermissionResponse(interaction, {
     content: `Remove the explicit **${formatPermissionProfile(original)}** profile from ${target.mention}?\n\nOther applicable role permissions and inherited administrator access will remain.`,
     components: [buttons], flags: discord.MessageFlags.Ephemeral
   });
@@ -1655,7 +1899,7 @@ async function handlePermissionRemove(interaction) {
 // Creates a paginated read-only permission listing
 // interaction = ChatInputCommandInteraction
 async function handlePermissionList(interaction) {
-  await interaction.deferReply({flags: discord.MessageFlags.Ephemeral});
+  if (!interaction.deferred && !interaction.replied) {await interaction.deferReply({flags: discord.MessageFlags.Ephemeral});}
   const entries   = permissions.getPermissions(interaction.guild.id);
   const owner     = await interaction.guild.fetchOwner();
   const inherited = new Map([[owner.id, owner]]);
@@ -1769,6 +2013,7 @@ async function handleNotification(interaction) {
     pendingAdd:  {},
     configTargets: [],
     configValues:  [],
+    testTargets: [],
     canUse:      action => permissions.canUseCommand(member, "notification", action)
   };
 
@@ -1835,6 +2080,7 @@ function renderNotificationMenu(interaction, state) {
       }
       if (state.canUse("refresh")) {options.push(menuOption("Refresh now", "refresh", "Post current content now"));}
       options.push(menuOption("View all", "list", "List configured notifications"));
+      if (state.canUse("test")) {options.push(menuOption("Test notification", "test", "Send a sample to the real destination"));}
       options.push(menuOption("Dedupe window", "dedupe", `Currently ${hours} hour(s) — 0 always posts a new message`));
       if (state.canUse("groups")) {
         options.push(menuOption("Announcement groups", "groups", "Combine creators into one announcement"));
@@ -1868,54 +2114,22 @@ function renderNotificationMenu(interaction, state) {
       );
       const editOptions = [
         menuOption("Rename",  "rename",  "Change the nickname"),
-        menuOption("Message", "message", "Change the custom message")
+        menuOption("Message configs", "configs", "Default, platform, creator, or group messages")
       ];
 
-      if (state.canUse("message")) {
-        editOptions.push(menuOption("Message options", "options", "Mentions and creator name on edit"));
+      if (state.canUse("channel")) {
+        editOptions.push(menuOption("Channel", "channel", "Change the destination channel"));
       }
+      editOptions.push(menuOption("Refresh", "refresh", "Post current content now"));
 
-      editOptions.push(
-        menuOption("Channel", "channel", "Change the destination channel"),
-        menuOption("Refresh", "refresh", "Post current content now"),
-        menuOption("Delete",  "delete",  "Remove this notification"),
-        menuOption("Back",    "back",    "Choose another creatoFr")
-      );
+      if (state.canUse("delete")) {
+        editOptions.push(menuOption("Delete", "delete", "Remove this notification"));
+      }
+      editOptions.push(menuOption("Back", "back", "Choose another creator"));
 
       rows = [
         buildSelectRow(menuId("notification", "edit"), editOptions, {placeholder:"Choose an edit"}),
         buildButtonRow([{customId:menuId("notification","back"),label:"Back",style:"secondary"}])
-      ];
-      break;
-    }
-
-    case "message-options": {
-      const subscription = state.list[state.selection];
-      const options = state.options ?? notifications.getNotificationMessageOptions(
-        guild.id,
-        subscription.platform,
-        subscription.channelId
-      );
-
-      embed.setDescription(
-        `Message options for **${subscription.nickname}**\n\n` +
-        `Roles mentioned: ${options.mentionRoles.length}\n` +
-        `Users mentioned: ${options.mentionUsers.length}\n` +
-        `Creator name on edit: ${options.showCreatorOnEdit ? "On" : "Off"}\n\n` +
-        `Placeholders: \`{creator}\`, \`{platform}\`, \`{title}\``
-      );
-
-      rows = [
-        buildMentionableRow(menuId("notification","message-options","roles"), {placeholder:"Choose roles to mention", maxValues:5}),
-        buildMentionableRow(menuId("notification","message-options","users"), {placeholder:"Choose users to mention", maxValues:5}),
-        buildButtonRow([
-          {
-            customId: menuId("notification","message-options","toggle"),
-            label: `Creator name on edit: ${options.showCreatorOnEdit ? "On" : "Off"}`,
-            style: "secondary"
-          },
-          {customId:menuId("notification","back"),label:"Back",style:"secondary"}
-        ])
       ];
       break;
     }
@@ -2181,6 +2395,23 @@ function renderNotificationMenu(interaction, state) {
       break;
     }
 
+    case "test": {
+      const targets = notifications.getTestTargets(interaction.guild.id);
+      embed.setTitle("Test notification");
+      embed.setDescription("Pick one or more configs, groups, or an entire platform. The test uses the same message and mentions, with no API calls, tracking, or refresh use.");
+      rows = [
+        buildSelectRow(menuId("notification","test","targets"), targets.map(target => menuOption(
+          target.label, target.value, target.groupId ? "Group announcement" : "Notification config"
+        )), {placeholder:"Choose target(s)", minValues:1, maxValues:Math.min(targets.length,25)}),
+        buildButtonRow([
+          {customId:menuId("notification","test","preset"), label:"Use preset data", style:"primary"},
+          {customId:menuId("notification","test","latest"), label:"Use latest cached data", style:"secondary"},
+          {customId:menuId("notification","back"), label:"Back", style:"secondary"}
+        ])
+      ];
+      break;
+    }
+
     case "add-platform": {
       embed.setDescription("Choose the creator's platform.");
       rows = [buildSelectRow(menuId("notification","add","platform"), [
@@ -2246,24 +2477,6 @@ function notificationRenameModal(nickname) {
         .setValue(nickname)
         .setRequired(true)
         .setMaxLength(100)
-      )
-    );
-}
-
-
-// Builds the modal used to edit a custom message
-function notificationMessageModal(nickname, current) {
-  return new discord.ModalBuilder()
-    .setCustomId(menuId("notification","message","form"))
-    .setTitle(`Message for ${nickname}`)
-    .addComponents(
-      new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-        .setCustomId("message")
-        .setLabel("Custom message (blank restores the default)")
-        .setStyle(discord.TextInputStyle.Paragraph)
-        .setValue(current ?? "")
-        .setRequired(false)
-        .setMaxLength(2000)
       )
     );
 }
@@ -2501,32 +2714,12 @@ async function handleNotificationComponent(component, interaction, state, collec
       return;
     }
 
-    if (choice === "message" && state.canUse("message")) {
-      const customId = menuId("notification","message","form");
-      const submission = await showNotificationModal(component, notificationMessageModal(subscription.nickname, subscription.customMessage), customId);
-      if (!submission) {return;}
-
-      const customMessage = submission.fields.getTextInputValue("message").trim() || null;
-      const result = notifications.setSubscriptionMessage(guild.id, subscription.nickname, subscription.platform, customMessage);
-      state.status = result.success
-        ? (customMessage ? `Updated the message for **${subscription.nickname}**.` : `Restored the default message for **${subscription.nickname}**.`)
-        : `Could not update the message: ${result.reason}.`;
-      state.list = notifications.getGuildSubscriptions(guild.id);
-      state.page = "home";
-
-      await submission.reply({content:state.status, flags:discord.MessageFlags.Ephemeral}).catch(() => {});
-      await interaction.editReply(renderNotificationMenu(interaction, state)).catch(() => {});
-      return;
-    }
-
-    if (choice === "options" && state.canUse("message")) {
-      state.options = notifications.getNotificationMessageOptions(
-        guild.id,
-        subscription.platform,
-        subscription.channelId
-      );
+    if (choice === "configs" && state.canUse("message")) {
+      state.backPage = "edit";
+      state.configTargets = [];
+      state.configValues = [];
       state.status = null;
-      state.page = "message-options";
+      state.page = "config-list";
       await refresh();
       return;
     }
@@ -2544,49 +2737,6 @@ async function handleNotificationComponent(component, interaction, state, collec
 
     if (choice === "delete" && state.canUse("delete")) {
       state.page = "confirm";
-      await refresh();
-      return;
-    }
-
-    await refresh();
-    return;
-  }
-
-  if (page === "message-options") {
-    const subscription = state.list[state.selection];
-    const key = parts[2];
-
-    if (key === "toggle") {
-      state.options = notifications.setNotificationMessageOptions(
-        guild.id,
-        subscription.platform,
-        subscription.channelId,
-        {
-          ...state.options,
-          showCreatorOnEdit: !state.options.showCreatorOnEdit
-        }
-      );
-      state.status = state.options.showCreatorOnEdit
-        ? "The creator name will be shown when a notification is edited."
-        : "The creator name will no longer be shown on edits.";
-      await refresh();
-      return;
-    }
-
-    if (key === "roles" || key === "users") {
-      const ids = (component.values ?? []).slice(0, 5);
-      state.options = notifications.setNotificationMessageOptions(
-        guild.id,
-        subscription.platform,
-        subscription.channelId,
-        {
-          ...state.options,
-          [key === "roles" ? "mentionRoles" : "mentionUsers"]: ids
-        }
-      );
-      state.status = key === "roles"
-        ? `Saved ${ids.length} role mention(s).`
-        : `Saved ${ids.length} user mention(s).`;
       await refresh();
       return;
     }
@@ -3106,5 +3256,285 @@ async function handleNotificationComponent(component, interaction, state, collec
     return;
   }
 
+  if (page === "test") {
+    const useLatest = parts[2] === "latest";
+    if (parts[2] !== "preset" && parts[2] !== "latest") {await refresh(); return;}
+    const targets = (state.testTargets ?? []).map(value => {
+      const found = notifications.getTestTargets(guild.id).find(target => target.value === value);
+      return found;
+    }).filter(Boolean);
+    const lines = [];
+    for (const target of targets) {
+      const result = await notifications.sendTestNotification(interaction.client, guild.id, target, useLatest);
+      lines.push(result.success ? `Sent test for **${target.label}**.` : `Could not send test for **${target.label}**: ${result.reason}.`);
+      if (!result.success) {log.warn("Notification test failed:", guild.id, target.value, result.reason);}
+    }
+    state.testTargets = [];
+    state.status = lines.join("\n").slice(0, 4000);
+    state.page = "home";
+    await interaction.editReply(renderNotificationMenu(interaction, state)).catch(() => {});
+    await component.reply({content:"Test notifications were sent.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+    return;
+  }
+
+  if (page === "test" && parts[2] === "targets") {
+    state.testTargets = component.values ?? [];
+    state.page = "test";
+    await component.update(renderNotificationMenu(interaction, state));
+    return;
+  }
+
   await refresh();
+}
+
+async function handleInactivity(interaction) {
+  if (!interaction.guild) {await interaction.reply({content:"This command can only be used in a Discord server.", flags:discord.MessageFlags.Ephemeral}); return;}
+  if (!await requireCommandAccess(interaction,"inactivity","setup")) {return;}
+  const state = {page:"home", rule:null, rules:[]};
+  const render = () => {
+    const embed = new discord.EmbedBuilder().setTitle("BargazBot Inactivity Alerts").setColor(0x5865F2).setTimestamp();
+    let rows = [];
+    if (state.page === "home") {
+      state.rules = inactivity.getRules(interaction.guild.id);
+      embed.setDescription(state.rules.length
+        ? state.rules.map(rule => `**${rule.name}** — ${rule.scope}, ${rule.durationMinutes} min, ${rule.enabled ? "on" : "off"}`).join("\n")
+        : "No inactivity rules are configured.");
+      rows = [buildSelectRow(menuId("inactivity","home"), [
+        menuOption("Add rule", "add", "Create a channel or server inactivity rule"),
+        menuOption("Edit rule", "edit", "Change an existing rule"),
+        menuOption("Delete rule", "delete", "Remove a rule")
+      ], {placeholder:"Choose an action", minValues:1, maxValues:1})];
+    } else if (state.page === "edit") {
+      const rule = state.rule;
+      embed.setDescription(`Editing **${rule.name}**`);
+      rows = [
+        buildSelectRow(menuId("inactivity","edit"), [
+          menuOption("Name", "name"), menuOption("Message", "message"),
+          menuOption("Duration (minutes)", "duration"), menuOption("Scope", "scope"),
+          menuOption("Destination channel", "channel"), menuOption("Include bot messages", "bots"),
+          menuOption("Enabled", "enabled"), menuOption("Monitored channels", "targets"),
+          menuOption("Back", "back")
+        ], {placeholder:"Choose a setting"}),
+        buildButtonRow([{customId:menuId("inactivity","back"), label:"Back", style:"secondary"}])
+      ];
+    }
+    return {embeds:[embed], components:rows, flags:discord.MessageFlags.Ephemeral};
+  };
+  await interaction.deferReply({flags:discord.MessageFlags.Ephemeral});
+  const reply = await interaction.editReply(render());
+  const collector = createCommandCollector(reply, {time:300000});
+  onCommandComponent(collector, async component => {
+    if (component.user.id !== interaction.user.id) {await component.reply({content:"Only the person who opened this menu can use it.", flags:discord.MessageFlags.Ephemeral}); return;}
+    const parts = parseMenuId(component.customId);
+    const action = parts[1];
+    try {
+      if (action === "back") {state.page = "home"; state.rule = null; await component.update(render()); return;}
+      if (action === "home") {
+        const choice = component.values?.[0];
+        if (choice === "add") {
+          state.rule = inactivity.createRule(interaction.guild.id, {name:"New inactivity rule", scope:"channel", durationMinutes:60, targets:[]});
+          state.page = "edit";
+        } else if (choice === "edit" || choice === "delete") {
+          state.rules = inactivity.getRules(interaction.guild.id);
+          state.page = "pick";
+          state.action = choice;
+        }
+        await component.update(render());
+        return;
+      }
+      if (state.page === "pick") {
+        const rule = state.rules[Number(component.values?.[0] ?? 0)];
+        if (!rule) {await component.update(render()); return;}
+        if (state.action === "delete") {inactivity.deleteRule(interaction.guild.id, rule.ruleId); state.page = "home";}
+        else {state.rule = rule; state.page = "edit";}
+        await component.update(render());
+        return;
+      }
+      if (action === "edit") {
+        const choice = component.values?.[0];
+        if (choice === "back") {state.page = "home"; await component.update(render()); return;}
+        if (["name","message","duration"].includes(choice)) {
+          const customId = menuId("inactivity","field",choice);
+          const submitted = component.awaitModalSubmit({filter:item => item.customId === customId && item.user.id === component.user.id, time:300000}).catch(() => null);
+          await component.showModal(new discord.ModalBuilder().setCustomId(customId).setTitle(`Edit ${choice}`)
+            .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+              .setCustomId("value").setLabel(choice).setStyle(discord.TextInputStyle.Short)
+              .setValue(String(state.rule[choice === "duration" ? "durationMinutes" : choice] ?? "")).setRequired(true).setMaxLength(2000)
+            )));
+          if (!submitted) {return;}
+          const value = submitted.fields.getTextInputValue("value").trim();
+          state.rule = inactivity.updateRule(interaction.guild.id, state.rule.ruleId, {[choice === "duration" ? "durationMinutes" : choice]: choice === "duration" ? Number(value) : value});
+          await submitted.reply({content:"Saved.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+          await interaction.editReply(render()).catch(() => {});
+          return;
+        }
+        if (choice === "scope") {state.rule = inactivity.updateRule(interaction.guild.id, state.rule.ruleId, {scope:state.rule.scope === "channel" ? "guild" : "channel"});}
+        if (choice === "bots") {state.rule = inactivity.updateRule(interaction.guild.id, state.rule.ruleId, {includeBotMessages:!state.rule.includeBotMessages});}
+        if (choice === "enabled") {state.rule = inactivity.updateRule(interaction.guild.id, state.rule.ruleId, {enabled:!state.rule.enabled});}
+        if (choice === "channel" || choice === "targets") {state.pickKind = choice; state.page = "channels";}
+        await component.update(render());
+        return;
+      }
+      if (state.page === "channels") {
+        const ids = component.values ?? [];
+        if (state.pickKind === "channel") {state.rule = inactivity.updateRule(interaction.guild.id, state.rule.ruleId, {destinationChannelId:ids[0] ?? null});}
+        else {inactivity.setTargets(interaction.guild.id, state.rule.ruleId, ids);}
+        state.page = "edit";
+        await component.update(render());
+        return;
+      }
+      await component.update(render());
+    } catch (error) {
+      log.error("Inactivity menu error:", error);
+      await component.reply({content:"The inactivity menu encountered an error.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+      collector.stop("error");
+    }
+  });
+  collector.on("end", async () => {await interaction.editReply({components:[]}).catch(() => {});});
+}
+
+async function handleTimers(interaction) {
+  const ownerType = interaction.guild ? "guild" : "user";
+  const ownerId   = interaction.guild ? interaction.guild.id : interaction.user.id;
+  if (interaction.guild && !await requireCommandAccess(interaction,"timers","setup")) {return;}
+  const state = {page:"home", section:"timer", selected:null};
+  const render = () => {
+    const embed = new discord.EmbedBuilder().setTitle("BargazBot Timers").setColor(0x5865F2).setTimestamp();
+    let rows = [];
+    if (state.page === "home") {
+      const list = state.section === "timer" ? timers.getTimers(ownerType,ownerId) : timers.getBirthdayCommands(ownerType,ownerId);
+      embed.setDescription((state.status ? `${state.status}\n\n` : "") +
+        (list.length ? list.map(item => `**${item.name ?? item.triggerText}** — ${item.kind ?? item.announceMode}`).join("\n") : "Nothing configured."));
+      rows = [
+        buildSelectRow(menuId("timers","section"), [
+          menuOption("Timers", "timer", "One-shot and recurring reminders"),
+          menuOption("Birthday commands", "birthday", "Custom birthday triggers")
+        ], {placeholder:"Choose a section"}),
+        buildSelectRow(menuId("timers","home"), [
+          menuOption("Add", "add"), menuOption("Edit", "edit"), menuOption("Delete", "delete")
+        ], {placeholder:"Choose an action"}),
+        buildButtonRow([{customId:menuId("timers","back"), label:"Back", style:"secondary"}])
+      ];
+    }
+    return {embeds:[embed], components:rows, flags:discord.MessageFlags.Ephemeral};
+  };
+  await interaction.deferReply({flags:discord.MessageFlags.Ephemeral});
+  const reply = await interaction.editReply(render());
+  const collector = createCommandCollector(reply, {time:300000});
+  onCommandComponent(collector, async component => {
+    if (component.user.id !== interaction.user.id) {await component.reply({content:"Only the person who opened this menu can use it.", flags:discord.MessageFlags.Ephemeral}); return;}
+    const parts = parseMenuId(component.customId);
+    try {
+      if (parts[1] === "section") {state.section = component.values?.[0]; await component.update(render()); return;}
+      if (parts[1] === "home") {
+        const choice = component.values?.[0];
+        const prefix = state.section === "timer" ? "timer" : "birthday";
+        const customId = menuId("timers","form",prefix,choice);
+        const submitted = component.awaitModalSubmit({filter:item => item.customId === customId && item.user.id === component.user.id, time:300000}).catch(() => null);
+        const useBirthday = prefix === "birthday";
+        await component.showModal(new discord.ModalBuilder().setCustomId(customId).setTitle(useBirthday ? "Birthday command" : "Timer")
+          .addComponents(
+            new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("trigger").setLabel(useBirthday ? 'Trigger text (e.g. "!birthday MM-DD")' : "Name").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(100)),
+            new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("value").setLabel(useBirthday ? "Date format and message" : "Time + timezone, or schedule").setStyle(discord.TextInputStyle.Paragraph).setRequired(choice === "add").setMaxLength(2000))
+          ));
+        if (!submitted) {return;}
+        const trigger = submitted.fields.getTextInputValue("trigger").trim();
+        const value = submitted.fields.getTextInputValue("value").trim();
+        if (choice === "add") {
+          if (useBirthday) {timers.createBirthdayCommand(ownerType,ownerId,{triggerText:trigger, message:value, dateFormat:"MM-DD", announceMode:"as-coming", yearMode:"exclude"});}
+          else {timers.createTimer(ownerType,ownerId,{name:trigger, kind:"one-shot", schedule:value, timezone:"UTC", payload:{message:value}});}
+          state.status = "Created.";
+        }
+        if (choice === "delete") {
+          const list = useBirthday ? timers.getBirthdayCommands(ownerType,ownerId) : timers.getTimers(ownerType,ownerId);
+          const found = list.find(item => (item.name ?? item.triggerText) === trigger);
+          if (found) {if (useBirthday) {timers.deleteBirthdayCommand(ownerType,ownerId,found.commandId);} else {timers.deleteTimer(ownerType,ownerId,found.timerId);} state.status = "Deleted.";}
+        }
+        await submitted.reply({content:state.status ?? "Saved.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+        state.status = state.status ?? "Saved.";
+        await interaction.editReply(render()).catch(() => {});
+        return;
+      }
+      await component.update(render());
+    } catch (error) {
+      log.error("Timer menu error:", error);
+      await component.reply({content:"The timer menu encountered an error.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+      collector.stop("error");
+    }
+  });
+  collector.on("end", async () => {await interaction.editReply({components:[]}).catch(() => {});});
+}
+
+async function handleAutopublish(interaction) {
+  if (!interaction.guild) {await interaction.reply({content:"This command can only be used in a Discord server.", flags:discord.MessageFlags.Ephemeral}); return;}
+  if (!await requireCommandAccess(interaction,"autopublish","setup")) {return;}
+  const mode = interaction.options.getString("mode", true);
+  const channel = interaction.options.getChannel("channel");
+  if (mode === "list") {
+    const channels = autopublish.getChannels(interaction.guild.id);
+    const embed = new discord.EmbedBuilder().setTitle("Auto publish channels")
+      .setDescription(channels.length ? channels.map(row => `${row.enabled ? "✅" : "❌"} <#${row.channel_id}>`).join("\n") : "No announcement channels are configured.")
+      .setTimestamp();
+    await interaction.reply({embeds:[embed], flags:discord.MessageFlags.Ephemeral});
+    return;
+  }
+  if (mode === "channel") {
+    if (!channel) {await interaction.reply({content:"Choose an announcement channel.", flags:discord.MessageFlags.Ephemeral}); return;}
+    autopublish.setChannel(interaction.guild.id, channel.id, true);
+    log.info("BargazBot autopublish channel saved:", interaction.guild.id, channel.id, interaction.user.id);
+    await interaction.reply({content:`Auto publish enabled for ${channel}.`, flags:discord.MessageFlags.Ephemeral});
+    return;
+  }
+  await interaction.deferReply({flags:discord.MessageFlags.Ephemeral});
+  const result = await autopublish.publishAll(interaction.client, interaction.guild.id);
+  await interaction.editReply({content:`Published ${result.published} message(s), ${result.failed} failed. Results were logged.`, flags:discord.MessageFlags.Ephemeral});
+}
+
+async function handleDm(interaction) {
+  if (interaction.guild) {await interaction.reply({content:"This command can only be used in a DM with BargazBot.", flags:discord.MessageFlags.Ephemeral}); return;}
+  const settings = featureSettings.getUserDmSettings(interaction.user.id);
+  const embed = new discord.EmbedBuilder().setTitle("BargazBot Direct Messages")
+    .setDescription(`DM features: ${settings.dmEnabled ? "On" : "Off"}\nFeedback delivery: ${settings.feedbackDelivery}\nTimezone: ${settings.timezone ?? "Not set"}`)
+    .setTimestamp();
+  await interaction.reply({embeds:[embed], components:[buildSelectRow(menuId("dm","home"), [
+    menuOption("DM features", "enabled", "Turn all DM features on or off"),
+    menuOption("Feedback delivery", "feedback", "DM, email, or none"),
+    menuOption("Timezone", "timezone", "Location-based timezone"),
+    menuOption("Notification subscriptions", "subscriptions", "Creators to follow in DMs")
+  ], {placeholder:"Choose a DM setting"})], flags:discord.MessageFlags.Ephemeral});
+  const message = await interaction.fetchReply();
+  const collector = createCommandCollector(message, {time:300000});
+  onCommandComponent(collector, async component => {
+    if (component.user.id !== interaction.user.id) {await component.reply({content:"Only you can use this menu.", flags:discord.MessageFlags.Ephemeral}); return;}
+    const choice = component.values?.[0];
+    try {
+      if (choice === "enabled") {featureSettings.updateUserDmSetting(interaction.user.id, {dmEnabled:!featureSettings.getUserDmSettings(interaction.user.id).dmEnabled}, interaction.user.id);}
+      if (choice === "feedback" || choice === "timezone") {
+        const customId = menuId("dm","field",choice);
+        const submitted = component.awaitModalSubmit({filter:item => item.customId === customId && item.user.id === component.user.id, time:300000}).catch(() => null);
+        await component.showModal(new discord.ModalBuilder().setCustomId(customId).setTitle(choice)
+          .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+            .setCustomId("value").setLabel(choice === "timezone" ? "Location-based timezone" : "dm, email, or none")
+            .setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(100)
+          )));
+        if (!submitted) {return;}
+        const value = submitted.fields.getTextInputValue("value").trim();
+        const result = featureSettings.updateUserDmSetting(interaction.user.id, choice === "feedback" ? {feedbackDelivery:value} : {timezone:value}, interaction.user.id);
+        await submitted.reply({content:result ? "Saved." : "That value is not valid.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+        await interaction.editReply({embeds:[new discord.EmbedBuilder().setTitle("BargazBot Direct Messages").setDescription(`DM features: ${result?.dmEnabled ? "On" : "Off"}\nFeedback delivery: ${result?.feedbackDelivery}\nTimezone: ${result?.timezone ?? "Not set"}`).setTimestamp()], components:message.components}).catch(() => {});
+        return;
+      }
+      if (choice === "subscriptions") {
+        await component.update({content:"Use `/dm subscriptions add <platform>` and `/dm subscriptions remove <platform> <creator>` in future menu expansion.", embeds:[], components:[]});
+        return;
+      }
+      const updated = featureSettings.getUserDmSettings(interaction.user.id);
+      await component.update({embeds:[new discord.EmbedBuilder().setTitle("BargazBot Direct Messages").setDescription(`DM features: ${updated.dmEnabled ? "On" : "Off"}\nFeedback delivery: ${updated.feedbackDelivery}\nTimezone: ${updated.timezone ?? "Not set"}`).setTimestamp()], components:message.components});
+    } catch (error) {
+      log.error("DM menu error:", error);
+      await component.reply({content:"The DM menu encountered an error.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+      collector.stop("error");
+    }
+  });
+  collector.on("end", async () => {await interaction.editReply({components:[]}).catch(() => {});});
 }

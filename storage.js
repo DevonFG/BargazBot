@@ -5,6 +5,14 @@ import fs from "node:fs";
 let db;
 let databaseClosing = false;
 
+function addColumnIfMissing(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name);
+  if (!columns.includes(column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    console.log(`Added BargazBot ${table}.${column}.`);
+  }
+}
+
 // Initialize SQLite connection & Schema
 export function initDB() {
   fs.mkdirSync(DB_DIR, {recursive: true});
@@ -22,6 +30,7 @@ export function initDB() {
       guild_id TEXT PRIMARY KEY,
       guild_name TEXT,
       owner_id TEXT,
+      installer_user_id TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS guild_members (
@@ -47,6 +56,7 @@ export function initDB() {
       youtube_limit INTEGER DEFAULT 0,
       twitch_limit INTEGER DEFAULT 0,
       kick_limit INTEGER DEFAULT 0,
+      auto_allocated INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (user_id, guild_id),
@@ -61,6 +71,11 @@ export function initDB() {
       updates_channel_id TEXT,
       status_channel_id TEXT,
       notification_dedupe_hours INTEGER NOT NULL DEFAULT 24,
+      setup_complete INTEGER NOT NULL DEFAULT 0,
+      installer_user_id TEXT,
+      welcome_message TEXT,
+      goodbye_message TEXT,
+      notice_channel_id TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
@@ -170,6 +185,9 @@ export function initDB() {
       permission_type TEXT NOT NULL,
       target_id TEXT NOT NULL,
       can_manage_permissions INTEGER NOT NULL DEFAULT 0 CHECK (can_manage_permissions IN (0,1)),
+      source TEXT NOT NULL DEFAULT 'manual',
+      is_implicit INTEGER NOT NULL DEFAULT 0,
+      installer_grant INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (guild_id, permission_type, target_id),
       FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
@@ -224,12 +242,14 @@ export function initDB() {
       FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS notification_configs (
       guild_id TEXT NOT NULL,
-      scope TEXT NOT NULL CHECK (scope IN ('default','platform','creator')),
+      scope TEXT NOT NULL DEFAULT 'default',
       scope_key TEXT NOT NULL DEFAULT '',
       custom_message TEXT,
       mention_roles TEXT NOT NULL DEFAULT '[]',
       mention_users TEXT NOT NULL DEFAULT '[]',
       show_creator_on_edit INTEGER NOT NULL DEFAULT 0 CHECK (show_creator_on_edit IN (0,1)),
+      allowed_kinds TEXT NOT NULL DEFAULT '[]',
+      allow_multiple_per_channel INTEGER NOT NULL DEFAULT 0 CHECK (allow_multiple_per_channel IN (0,1)),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (guild_id, scope, scope_key),
@@ -247,6 +267,8 @@ export function initDB() {
       mention_roles TEXT NOT NULL DEFAULT '[]',
       mention_users TEXT NOT NULL DEFAULT '[]',
       show_creator_on_edit INTEGER NOT NULL DEFAULT 0 CHECK (show_creator_on_edit IN (0,1)),
+      allowed_kinds TEXT NOT NULL DEFAULT '[]',
+      allow_multiple_per_channel INTEGER NOT NULL DEFAULT 0 CHECK (allow_multiple_per_channel IN (0,1)),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (guild_id, group_id),
@@ -296,8 +318,217 @@ export function initDB() {
       ON notification_refresh_usage (guild_id, platform, used_at);
     CREATE TABLE IF NOT EXISTS data_deletions (
       user_id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL DEFAULT 'all',
       expires_at INTEGER NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+
+    CREATE TABLE IF NOT EXISTS feature_settings (
+      guild_id TEXT NOT NULL,
+      feature TEXT NOT NULL,
+      feature_key TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, feature),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS response_settings (
+      guild_id TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'default',
+      scope_key TEXT NOT NULL DEFAULT '',
+      target_key TEXT NOT NULL DEFAULT '',
+      response_type TEXT NOT NULL DEFAULT 'message',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, scope, scope_key),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS guild_setup_state (
+      guild_id TEXT PRIMARY KEY,
+      setup_complete INTEGER NOT NULL DEFAULT 0,
+      setup_channel_id TEXT,
+      installer_user_id TEXT,
+      setup_completed_at INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS storage_notices (
+      user_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      channel_id TEXT,
+      sent_at INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, guild_id),
+      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS user_dm_settings (
+      user_id TEXT PRIMARY KEY,
+      dms_enabled INTEGER NOT NULL DEFAULT 1,
+      notifications_enabled INTEGER NOT NULL DEFAULT 0,
+      reminders_enabled INTEGER NOT NULL DEFAULT 0,
+      birthdays_enabled INTEGER NOT NULL DEFAULT 0,
+      feedback_enabled INTEGER NOT NULL DEFAULT 1,
+      feedback_method TEXT NOT NULL DEFAULT 'dm',
+      feedback_email TEXT,
+      storage_notice_sent INTEGER NOT NULL DEFAULT 0,
+      notice_channel_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS feedback_settings (
+      guild_id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      method TEXT NOT NULL DEFAULT 'dm',
+      email TEXT,
+      channel_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS entitlement_auto_allocations (
+      guild_id TEXT PRIMARY KEY,
+      installer_user_id TEXT,
+      youtube_limit INTEGER DEFAULT 0,
+      twitch_limit INTEGER DEFAULT 0,
+      kick_limit INTEGER DEFAULT 0,
+      allocated INTEGER NOT NULL DEFAULT 1,
+      allocated_at INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS inactivity_rules (
+      guild_id TEXT NOT NULL,
+      rule_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      message TEXT,
+      idle_minutes INTEGER NOT NULL DEFAULT 60,
+      timeout_minutes INTEGER NOT NULL DEFAULT 60,
+      destination_channel_id TEXT,
+      include_bot_messages INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      channels TEXT NOT NULL DEFAULT '[]',
+      guild_ids TEXT NOT NULL DEFAULT '[]',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, rule_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS inactivity_targets (
+      guild_id TEXT NOT NULL,
+      rule_id TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      channel_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, rule_id, target_type, target_id),
+      FOREIGN KEY (guild_id, rule_id) REFERENCES inactivity_rules(guild_id, rule_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS inactivity_rule_targets (
+      guild_id TEXT NOT NULL,
+      rule_id TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      channel_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, rule_id, target_type, target_id),
+      FOREIGN KEY (guild_id, rule_id) REFERENCES inactivity_rules(guild_id, rule_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS inactivity_state (
+      guild_id TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      last_activity_at INTEGER,
+      last_activity INTEGER,
+      last_notified_at INTEGER,
+      last_notified INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, target_type, target_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS timers (
+      timer_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      user_id TEXT,
+      name TEXT,
+      message TEXT,
+      channel_id TEXT,
+      trigger_text TEXT,
+      date_format TEXT NOT NULL DEFAULT 'YYYY-MM-DD',
+      timezone TEXT,
+      schedule TEXT,
+      schedule_type TEXT NOT NULL DEFAULT 'once',
+      next_run_at INTEGER,
+      last_run_at INTEGER,
+      role_ids TEXT NOT NULL DEFAULT '[]',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, timer_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS user_timers (
+      user_id TEXT NOT NULL,
+      timer_id TEXT NOT NULL,
+      name TEXT,
+      message TEXT,
+      trigger_text TEXT,
+      date_format TEXT NOT NULL DEFAULT 'YYYY-MM-DD',
+      timezone TEXT,
+      schedule TEXT,
+      schedule_type TEXT NOT NULL DEFAULT 'once',
+      next_run_at INTEGER,
+      last_run_at INTEGER,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, timer_id),
+      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS birthday_commands (
+      command_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      user_id TEXT,
+      birthday_date TEXT,
+      birthday_month INTEGER,
+      birthday_day INTEGER,
+      birthday_year INTEGER,
+      trigger_text TEXT,
+      date_format TEXT NOT NULL DEFAULT 'YYYY-MM-DD',
+      channel_id TEXT,
+      role_ids TEXT NOT NULL DEFAULT '[]',
+      message TEXT,
+      announce_mode TEXT NOT NULL DEFAULT 'day',
+      announce_days_before INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      next_run_at INTEGER,
+      last_run_at INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, command_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS user_birthdays (
+      user_id TEXT NOT NULL,
+      birthday_date TEXT,
+      birthday_month INTEGER,
+      birthday_day INTEGER,
+      birthday_year INTEGER,
+      date_format TEXT NOT NULL DEFAULT 'YYYY-MM-DD',
+      message TEXT,
+      announce_mode TEXT NOT NULL DEFAULT 'day',
+      announce_days_before INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      next_run_at INTEGER,
+      last_run_at INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id),
+      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS autopublish_settings (
+      guild_id TEXT PRIMARY KEY,
+      all_enabled INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS autopublish_channels (
+      guild_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, channel_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
   `);
 
   db.exec(`
@@ -336,33 +567,56 @@ export function initDB() {
       custom_message = excluded.custom_message;
   `);
 
-const guildSettingsColumns = db.prepare("PRAGMA table_info(guild_settings)").all().map(column => column.name);
-if (!guildSettingsColumns.includes("updates_channel_id")) {
-  db.exec("ALTER TABLE guild_settings ADD COLUMN updates_channel_id TEXT");
-  db.exec("UPDATE guild_settings SET updates_channel_id = COALESCE(announcement_channel_id, status_channel_id, logs_channel_id)");
-  console.log("Added BargazBot Updates channel setting.");
-}
-if (!guildSettingsColumns.includes("notification_dedupe_hours")) {
-  db.exec("ALTER TABLE guild_settings ADD COLUMN notification_dedupe_hours INTEGER NOT NULL DEFAULT 24");
-  console.log("Added notification dedupe window setting.");
-}
-const notificationMessageColumns = db.prepare("PRAGMA table_info(notification_messages)").all().map(column => column.name);
-if (!notificationMessageColumns.includes("creator_channel_id")) {
-  db.exec("ALTER TABLE notification_messages ADD COLUMN creator_channel_id TEXT");
-}
-if (!notificationMessageColumns.includes("content_title")) {
-  db.exec("ALTER TABLE notification_messages ADD COLUMN content_title TEXT");
-}
-const userColumns = db.prepare("PRAGMA table_info(users)").all().map(column => column.name);
-if (!userColumns.includes("paid_until")) {
-  db.exec("ALTER TABLE users ADD COLUMN paid_until DATETIME");
-  console.log("Added BargazBot paid entitlement placeholder.");
-}
-const profileColumns = db.prepare("PRAGMA table_info(guild_permission_profiles)").all().map(column => column.name);
-if (!profileColumns.includes("can_delete_data")) {
-  db.exec("ALTER TABLE guild_permission_profiles ADD COLUMN can_delete_data INTEGER NOT NULL DEFAULT 0");
-  console.log("Added BargazBot server data deletion flag.");
-}
+  const guildSettingsColumns = db.prepare("PRAGMA table_info(guild_settings)").all().map(column => column.name);
+  if (!guildSettingsColumns.includes("updates_channel_id")) {
+    db.exec("ALTER TABLE guild_settings ADD COLUMN updates_channel_id TEXT");
+    db.exec("UPDATE guild_settings SET updates_channel_id = COALESCE(announcement_channel_id, status_channel_id, logs_channel_id)");
+    console.log("Added BargazBot Updates channel setting.");
+  }
+  if (!guildSettingsColumns.includes("notification_dedupe_hours")) {
+    db.exec("ALTER TABLE guild_settings ADD COLUMN notification_dedupe_hours INTEGER NOT NULL DEFAULT 24");
+    console.log("Added notification dedupe window setting.");
+  }
+  addColumnIfMissing("guild_settings", "setup_complete", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("guild_settings", "installer_user_id", "TEXT");
+  addColumnIfMissing("guild_settings", "welcome_message", "TEXT");
+  addColumnIfMissing("guild_settings", "goodbye_message", "TEXT");
+  addColumnIfMissing("guild_settings", "notice_channel_id", "TEXT");
+
+  const notificationMessageColumns = db.prepare("PRAGMA table_info(notification_messages)").all().map(column => column.name);
+  if (!notificationMessageColumns.includes("creator_channel_id")) {
+    db.exec("ALTER TABLE notification_messages ADD COLUMN creator_channel_id TEXT");
+  }
+  if (!notificationMessageColumns.includes("content_title")) {
+    db.exec("ALTER TABLE notification_messages ADD COLUMN content_title TEXT");
+  }
+
+  addColumnIfMissing("notification_message_options", "allowed_kinds", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing("notification_message_options", "allow_multiple_per_channel", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("notification_configs", "allowed_kinds", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing("notification_configs", "allow_multiple_per_channel", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("notification_groups", "allowed_kinds", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing("notification_groups", "allow_multiple_per_channel", "INTEGER NOT NULL DEFAULT 0");
+
+  addColumnIfMissing("guilds", "installer_user_id", "TEXT");
+  addColumnIfMissing("entitlement_allocations", "auto_allocated", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("guild_permissions", "source", "TEXT NOT NULL DEFAULT 'manual'");
+  addColumnIfMissing("guild_permissions", "is_implicit", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("guild_permissions", "installer_grant", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("data_deletions", "scope", "TEXT NOT NULL DEFAULT 'all'");
+
+  const userColumns = db.prepare("PRAGMA table_info(users)").all().map(column => column.name);
+  if (!userColumns.includes("paid_until")) {
+    db.exec("ALTER TABLE users ADD COLUMN paid_until DATETIME");
+    console.log("Added BargazBot paid entitlement placeholder.");
+  }
+
+  const profileColumns = db.prepare("PRAGMA table_info(guild_permission_profiles)").all().map(column => column.name);
+  if (!profileColumns.includes("can_delete_data")) {
+    db.exec("ALTER TABLE guild_permission_profiles ADD COLUMN can_delete_data INTEGER NOT NULL DEFAULT 0");
+    console.log("Added BargazBot server data deletion flag.");
+  }
+
   console.log("SQLite initialized at:", DB_PATH);
   return db;
 }

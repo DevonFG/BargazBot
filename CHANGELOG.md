@@ -19,6 +19,36 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.10.2-dev.3 - Nov 21
+- Replaced /channels with /features-config with a popout menu for all configuration
+- Added feature toggles for most features though new /feature-config
+- Added response type configuration using normal messages and ephemerals (secret messages) including:
+  - a global default
+  - per feature/command overrides
+  - and an "all but command responses" bulk edit
+- By default, logging and inactivity features uses normal message default
+- /notification test was added and does all test abilities excepts grab from an API
+- /notification uses a menu with creator management including:
+  - new creator management
+  - message options with the ability to retain the creator name
+  - ability to manage mentions
+  - new menu for destination channels config
+  - new refresh controls menu
+  - new settings to manage duplicate content (like scheduled streams before a stream)
+- Added notifications config for defaults, platform, creator, and "groups" with custom messages, mentions, and creator-on-edit behavior
+- Added "groups" to notifications feature, allowing multiple channels from different platforms to announce in the same message
+- Added the ability for the same creator to be announced in multiple channels
+- Reworked permissions in a popout menu with target-first editing, a review page, paged lists, and made @everyone non-removable
+- Added installer detection from guildGreate audit logs with owner fallback to ensure users have the ability to confirgurate the bot
+- Added a 1-time entitlement auto-allocation on join/setup for the installer to allocate all entitlements to server to make setup easier
+- Added Discord channel inactivity monitor with configurable idle time, message, channels, if bot messages are included, and an optional destination channel
+- Added one-shot and recurring reminders, plus flexible birthday commands with loads of customization
+- Added autopublish feature for discord announcement channels, including the ability to configure specific channels and to include a;; announcement channels
+- Made DM features per-user only and excludes permission checks for DMs and DM groups
+- Added /data delete scope:This DM
+- Fixed feedback feature minor bugs
+- Added a private per-user notice when the bot starts collecting any data on a user pointing to /data view
+
 ## v26.10.2-dev.2 - Nov 20
 All changes under the next changelog, this commit only exists for simplicity during the process.
 

@@ -1,11 +1,21 @@
-import * as discord        from "discord.js";
-import * as channelManager from "./channelManager.js";
-import * as youtube        from "./youtube.js";
-import * as twitch         from "./twitch.js";
-import * as kick           from "./kick.js";
-import * as entitlements   from "./entitlements.js";
+import * as discord         from "discord.js";
 
-import { getDB, getNotificationDedupeHours } from "./storage.js";
+import * as autopublish     from "./autopublish.js";
+import * as channelManager  from "./channelManager.js";
+import * as entitlements    from "./entitlements.js";
+import * as featureSettings from "./featureSettings.js";
+import * as kick            from "./kick.js";
+import * as log             from "./appLogger.js";
+import * as twitch          from "./twitch.js";
+import * as youtube         from "./youtube.js";
+
+import {
+  emptyUserDmConfig,
+  getDB,
+  getNotificationDedupeHours,
+  getUserDmConfig,
+  getUserDmSubscriptions
+} from "./storage.js";
 
 const PLATFORM_COLORS       =  {youtube: 0xFF0000,  twitch: 0x9146FF, kick: 0x53FC18};
 const PLATFORM_NAMES        =  {youtube: "YouTube", twitch: "Twitch", kick: "Kick"};
@@ -14,6 +24,30 @@ const PLATFORM_KEYS         =  ["youtube", "twitch", "kick"];
 const DEFAULT_REFRESH_LIMIT = 2;
 const REFRESH_WINDOW_MS     = 6 * 60 * 60 * 1000;
 const MAX_MESSAGE_MENTIONS  = 5;
+
+const TEST_PRESETS = {
+  youtube: {
+    id:"test-youtube", channelId:"test-youtube-channel",
+    title:"A Test YouTube Video", url:"https://www.youtube.com/",
+    channelName:"Test YouTube Creator", channelHandle:"@testcreator",
+    contentType:"video", thumbnail:null, scheduledStartTime:null,
+    isLive:false, isScheduled:false, isEnded:false
+  },
+  twitch: {
+    id:"test-twitch", channelId:"test-twitch-channel",
+    title:"A Test Twitch Stream", url:"https://www.twitch.tv/",
+    channelName:"Test Twitch Streamer", channelHandle:"teststreamer",
+    contentType:"stream", thumbnail:null, scheduledStartTime:null,
+    isLive:true, isScheduled:false, isEnded:false, gameName:"Just Chatting"
+  },
+  kick: {
+    id:"test-kick", channelId:"test-kick-channel",
+    title:"A Test Kick Stream", url:"https://kick.com/",
+    channelName:"Test Kick Streamer", channelHandle:"teststreamer",
+    contentType:"stream", thumbnail:null, scheduledStartTime:null,
+    isLive:true, isScheduled:false, isEnded:false
+  }
+};
 
 function toSqlTimestamp(timestamp) {return new Date(timestamp).toISOString().replace("T", " ").slice(0, 19);}
 function normalizePlatform(platform) {const value = String(platform ?? "").trim().toLowerCase(); if (!PLATFORM_KEYS.includes(value)) { throw new Error(`Unknown notification platform: ${platform}`);} return value;}
@@ -61,10 +95,7 @@ export function buildDefaultMessage(content) {
 
 function buildMessageContent(content, subscription, options, isEdit = false) {
   const active = subscription?.resolvedConfig ?? options ?? {};
-  const creatorName =
-    subscription?.nickname ||
-    content.channelName ||
-    "Creator";
+  const creatorName = subscription?.nickname || content.channelName || "Creator";
 
   let text =
     active.customMessage ||
@@ -81,9 +112,7 @@ function buildMessageContent(content, subscription, options, isEdit = false) {
     ...(active.mentionUsers ?? []).map(id => `<@${id}>`)
   ].join(" ");
 
-  if (mentions) {
-    text = `${mentions} ${text}`;
-  }
+  if (mentions) {text = `${mentions} ${text}`;}
 
   if (isEdit && active.showCreatorOnEdit) {
     text = `${text}\n\n*Updated by ${creatorName}*`;
@@ -122,70 +151,6 @@ function cleanMentionIds(value) {
     .map(id => String(id))
     .filter(id => /^\d{17,20}$/.test(id))
     .slice(0, MAX_MESSAGE_MENTIONS);
-}
-
-
-export function getNotificationMessageOptions(guildId, platform, channelId) {
-  const row = getDB().prepare(`
-    SELECT
-      mention_roles,
-      mention_users,
-      show_creator_on_edit
-    FROM notification_message_options
-    WHERE guild_id = ?
-      AND platform = ?
-      AND channel_id = ?
-  `).get(
-    guildId,
-    normalizePlatform(platform),
-    String(channelId)
-  );
-
-  return {
-    mentionRoles: parseMentionIds(row?.mention_roles),
-    mentionUsers: parseMentionIds(row?.mention_users),
-    showCreatorOnEdit: Boolean(row?.show_creator_on_edit)
-  };
-}
-
-
-export function setNotificationMessageOptions(guildId, platform, channelId, options = {}) {
-  const mentionRoles = cleanMentionIds(options.mentionRoles);
-  const mentionUsers = cleanMentionIds(options.mentionUsers);
-  const showCreatorOnEdit = options.showCreatorOnEdit ? 1 : 0;
-
-  getDB().prepare(`
-    INSERT INTO notification_message_options (
-      guild_id,
-      platform,
-      channel_id,
-      mention_roles,
-      mention_users,
-      show_creator_on_edit,
-      created_at,
-      updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-
-    ON CONFLICT(guild_id, platform, channel_id) DO UPDATE SET
-      mention_roles = excluded.mention_roles,
-      mention_users = excluded.mention_users,
-      show_creator_on_edit = excluded.show_creator_on_edit,
-      updated_at = CURRENT_TIMESTAMP
-  `).run(
-    guildId,
-    normalizePlatform(platform),
-    String(channelId),
-    JSON.stringify(mentionRoles),
-    JSON.stringify(mentionUsers),
-    showCreatorOnEdit
-  );
-
-  return {
-    mentionRoles,
-    mentionUsers,
-    showCreatorOnEdit: Boolean(showCreatorOnEdit)
-  };
 }
 
 const NOTIFICATION_CONFIG_SCOPES = ["default", "platform", "creator", "group"];
@@ -330,17 +295,21 @@ export function resolveNotificationConfig(guildId, context = {}) {
   const creatorConfig = getNotificationConfig(guildId, "creator", creatorKey);
   const groupConfig = groupId ? getNotificationConfig(guildId, "group", groupId) : null;
 
-  const fallback =
-    creatorConfig ??
-    platformConfig ??
-    defaultConfig ??
-    null;
+  const fallback = creatorConfig ?? platformConfig ?? defaultConfig ?? null;
 
   if (isGroupPost) {return groupConfig ?? fallback;}
-
   if (groupId && !creatorConfig) {return groupConfig ?? fallback;}
-
   return fallback;
+}
+
+function configForSubscription(guildId, content, subscription) {
+  if (subscription?.resolvedConfig) {return subscription.resolvedConfig;}
+  return resolveNotificationConfig(guildId, {
+    platform:content.platform,
+    channelId:subscription?.channelId ?? content.channelId,
+    groupId:subscription?.groupId ?? null,
+    isGroupPost:Boolean(subscription?.isGroupPost)
+  }) ?? emptyNotificationConfig();
 }
 
 /*
@@ -450,6 +419,7 @@ export function createGroup(guildId, name = "New group", discordChannelId = null
     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
   `).run(guildId, groupId, cleanName, discordChannelId || null);
 
+  log.info("BargazBot group created:", guildId, groupId, cleanName);
   return findGroup(guildId, groupId);
 }
 
@@ -493,16 +463,19 @@ export function updateGroup(guildId, groupId, patch = {}) {
       SET ${columns.join(", ")}
       WHERE guild_id = ? AND group_id = ?
     `).run(...values, guildId, groupId);
+    log.info("BargazBot group updated:", guildId, groupId, Object.keys(patch).join(", "));
   }
 
   return findGroup(guildId, groupId);
 }
 
 export function deleteGroup(guildId, groupId) {
-  return getDB().prepare(`
+  const deleted = getDB().prepare(`
     DELETE FROM notification_groups
     WHERE guild_id = ? AND group_id = ?
   `).run(guildId, groupId).changes > 0;
+  if (deleted) {log.info("BargazBot group deleted:", guildId, groupId);}
+  return deleted;
 }
 
 export function getGroupMembers(guildId, groupId) {
@@ -548,6 +521,7 @@ export function setGroupMembers(guildId, groupId, members = []) {
     }
   })();
 
+  log.info("BargazBot group members updated:", guildId, groupId, clean.length);
   return clean;
 }
 
@@ -669,50 +643,22 @@ function saveStoredMessage(guildId,platform,contentId,eventType,channelId,messag
       created_at,
       updated_at
     )
-    VALUES (
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      CURRENT_TIMESTAMP,
-      CURRENT_TIMESTAMP
-    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 
-    ON CONFLICT(
-      guild_id,
-      platform,
-      content_id,
-      event_type
-    ) DO UPDATE SET
-      discord_channel_id =
-        excluded.discord_channel_id,
-      discord_message_id =
-        excluded.discord_message_id,
-      creator_channel_id =
-        excluded.creator_channel_id,
-      content_title =
-        excluded.content_title,
-      created_at =
-        CASE WHEN ? = 1
-          THEN CURRENT_TIMESTAMP
-          ELSE notification_messages.created_at
-        END,
-      updated_at =
-        CURRENT_TIMESTAMP
+    ON CONFLICT(guild_id, platform, content_id, event_type) DO UPDATE SET
+      discord_channel_id = excluded.discord_channel_id,
+      discord_message_id = excluded.discord_message_id,
+      creator_channel_id = excluded.creator_channel_id,
+      content_title = excluded.content_title,
+      created_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE notification_messages.created_at END,
+      updated_at = CURRENT_TIMESTAMP
   `).run(guildId,platform,contentId,eventType,channelId,messageId,creatorChannelId,contentTitle,resetTracking ? 1 : 0);
 }
 function deleteStoredMessage(guildId,platform,contentId,eventType) {
   const db = getDB();
   db.prepare(`
     DELETE FROM notification_messages
-    WHERE guild_id = ?
-      AND platform = ?
-      AND content_id = ?
-      AND event_type = ?
+    WHERE guild_id = ? AND platform = ? AND content_id = ? AND event_type = ?
   `).run(guildId,platform,contentId,eventType);
 }
 function isSameStream(row, content) {
@@ -732,20 +678,10 @@ async function findReusableMessage(guild,content,subscription) {
   const cutoff = toSqlTimestamp(Date.now() - hours * 60 * 60 * 1000);
   const rows = getDB().prepare(`
     SELECT
-      guild_id,
-      platform,
-      content_id,
-      event_type,
-      discord_channel_id,
-      discord_message_id,
-      creator_channel_id,
-      content_title,
-      created_at,
-      updated_at
+      guild_id, platform, content_id, event_type, discord_channel_id,
+      discord_message_id, creator_channel_id, content_title, created_at, updated_at
     FROM notification_messages
-    WHERE guild_id = ?
-      AND creator_channel_id = ?
-      AND created_at >= ?
+    WHERE guild_id = ? AND creator_channel_id = ? AND created_at >= ?
     ORDER BY created_at DESC, updated_at DESC
   `).all(guild.id,String(content.channelId ?? ""),cutoff);
   const row = rows.find(candidate => isSameStream(candidate, content));
@@ -758,7 +694,7 @@ async function findReusableMessage(guild,content,subscription) {
   return {row, message: latestMessage};
 }
 async function editReusableMessage(guild,content,eventType,subscription,reusable) {
-  const messageOptions = subscription.resolvedConfig ?? getNotificationMessageOptions(guild.id,content.platform,content.channelId);
+  const messageOptions = configForSubscription(guild.id, content, subscription);
   await reusable.message.edit({content:buildMessageContent(content,subscription,messageOptions,true), embeds: [buildNotificationEmbed(content)]});
   const trackingId = getTrackingContentId(content);
   const oldKey = [guild.id, reusable.row.platform, reusable.row.content_id, reusable.row.event_type];
@@ -769,24 +705,14 @@ async function editReusableMessage(guild,content,eventType,subscription,reusable
     if (!keysMatch) {
       db.prepare(`
         DELETE FROM notification_messages
-        WHERE guild_id = ?
-          AND platform = ?
-          AND content_id = ?
-          AND event_type = ?
+        WHERE guild_id = ? AND platform = ? AND content_id = ? AND event_type = ?
       `).run(...newKey);
     }
     db.prepare(`
       UPDATE notification_messages
-      SET
-        event_type = ?,
-        content_id = ?,
-        content_title = ?,
-        creator_channel_id = ?,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE guild_id = ?
-        AND platform = ?
-        AND content_id = ?
-        AND event_type = ?
+      SET event_type = ?, content_id = ?, content_title = ?,
+          creator_channel_id = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE guild_id = ? AND platform = ? AND content_id = ? AND event_type = ?
     `).run(eventType,trackingId,content.title ?? null,String(content.channelId ?? ""),...oldKey);
   })();
   return reusable.message;
@@ -801,23 +727,13 @@ export function getGuildSubscriptions(guildId,platform = null) {
     const channelTable = getChannelTable(currentPlatform);
     const rows = db.prepare(`
       SELECT
-        subscriptions.guild_id,
-        subscriptions.channel_id,
-        subscriptions.nickname,
-        subscriptions.discord_channel_id,
-        subscriptions.custom_message,
-        channels.channel_name,
-        channels.channel_url,
-        channels.channel_handle
-      FROM ${subscriptionTable}
-        AS subscriptions
-      INNER JOIN ${channelTable}
-        AS channels
-        ON channels.channel_id =
-          subscriptions.channel_id
+        subscriptions.guild_id, subscriptions.channel_id, subscriptions.nickname,
+        subscriptions.discord_channel_id, subscriptions.custom_message,
+        channels.channel_name, channels.channel_url, channels.channel_handle
+      FROM ${subscriptionTable} AS subscriptions
+      INNER JOIN ${channelTable} AS channels ON channels.channel_id = subscriptions.channel_id
       WHERE subscriptions.guild_id = ?
-      ORDER BY
-        channels.channel_name ASC
+      ORDER BY channels.channel_name ASC
     `).all(guildId);
     for (const row of rows) {subscriptions.push({
       platform:currentPlatform, guildId:row.guild_id, channelId:row.channel_id,
@@ -845,26 +761,14 @@ export async function addSubscription(guildId,platform,input,nickname,discordCha
   const table = getSubscriptionTable(key);
   const result = db.prepare(`
     INSERT OR IGNORE INTO ${table} (
-      guild_id,
-      channel_id,
-      nickname,
-      discord_channel_id,
-      custom_message,
-      created_at,
-      updated_at
+      guild_id, channel_id, nickname, discord_channel_id, custom_message, created_at, updated_at
     )
-    VALUES (
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      CURRENT_TIMESTAMP,
-      CURRENT_TIMESTAMP
-    )
+    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
   `).run(guildId,channel.channel_id,nickname,discordChannelId,customMessage);
   if (result.changes === 0) {return {success: false, reason: "already-exists", channel};}
+  if (customMessage) {setNotificationConfig(guildId,"creator",`${key}:${channel.channel_id}`,{customMessage});}
   if (key === "youtube") {await youtube.initializeChannel(channel.channel_id);}
+  log.info("BargazBot subscription added:", guildId, key, channel.channel_id, nickname);
   return {success: true, channel};
 }
 
@@ -875,47 +779,21 @@ export function deleteSubscription(guildId,nickname,platform) {
   const table = getSubscriptionTable(subscription.platform);
   const result = db.prepare(`
     DELETE FROM ${table}
-    WHERE guild_id = ?
-      AND channel_id = ?
+    WHERE guild_id = ? AND channel_id = ?
   `).run(guildId,subscription.channelId);
   if (result.changes > 0) {
     getDB().prepare(`
-      DELETE FROM notification_message_options
-      WHERE guild_id = ?
-        AND platform = ?
-        AND channel_id = ?
-    `).run(
-      guildId,
-      subscription.platform,
-      subscription.channelId
-    );
-    getDB().prepare(`
       DELETE FROM notification_configs
-      WHERE guild_id = ?
-        AND scope = 'creator'
-        AND scope_key = ?
-    `).run(
-      guildId,
-      `${subscription.platform}:${subscription.channelId}`
-    );
+      WHERE guild_id = ? AND scope = 'creator' AND scope_key = ?
+    `).run(guildId,`${subscription.platform}:${subscription.channelId}`);
     getDB().prepare(`
       DELETE FROM notification_group_members
-      WHERE guild_id = ?
-        AND platform = ?
-        AND channel_id = ?
-    `).run(
-      guildId,
-      subscription.platform,
-      subscription.channelId
-    );
+      WHERE guild_id = ? AND platform = ? AND channel_id = ?
+    `).run(guildId,subscription.platform,subscription.channelId);
+    log.info("BargazBot subscription removed:", guildId, subscription.platform, subscription.channelId);
   }
 
-  return {
-    success:
-      result.changes > 0,
-
-    subscription
-  };
+  return {success:result.changes > 0, subscription};
 }
 export function editSubscription(guildId,nickname,platform,newNickname) {
   const subscription = findGuildSubscription(guildId,nickname,platform);
@@ -924,31 +802,12 @@ export function editSubscription(guildId,nickname,platform,newNickname) {
   const table = getSubscriptionTable(subscription.platform);
   try {db.prepare(`
     UPDATE ${table}
-    SET
-      nickname = ?,
-      updated_at =
-        CURRENT_TIMESTAMP
-    WHERE guild_id = ?
-      AND channel_id = ?
+    SET nickname = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE guild_id = ? AND channel_id = ?
   `).run(newNickname,guildId,subscription.channelId);
   } catch (error) {if (error?.code === "SQLITE_CONSTRAINT_UNIQUE") {return {success: false, reason: "nickname-exists"};} throw error;}
+  log.info("BargazBot subscription renamed:", guildId, subscription.channelId, newNickname);
   return {success: true, subscription: {...subscription,nickname: newNickname}};
-}
-export function setSubscriptionMessage(guildId,nickname,platform,customMessage) {
-  const subscription = findGuildSubscription(guildId,nickname,platform);
-  if (!subscription) {return {success: false,reason: "not-found"};}
-  const db = getDB();
-  const table = getSubscriptionTable(platform);
-  db.prepare(`
-    UPDATE ${table}
-    SET
-      custom_message = ?,
-      updated_at =
-        CURRENT_TIMESTAMP
-    WHERE guild_id = ?
-      AND channel_id = ?
-  `).run(customMessage,guildId,subscription.channelId);
-  return {success: true,subscription: {...subscription,customMessage}};
 }
 export function setSubscriptionChannel(guildId,nickname,platform,discordChannelId) {
   const subscription = findGuildSubscription(guildId,nickname,platform);
@@ -957,13 +816,10 @@ export function setSubscriptionChannel(guildId,nickname,platform,discordChannelI
   const table = getSubscriptionTable(platform);
   db.prepare(`
     UPDATE ${table}
-    SET
-      discord_channel_id = ?,
-      updated_at =
-        CURRENT_TIMESTAMP
-    WHERE guild_id = ?
-      AND channel_id = ?
+    SET discord_channel_id = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE guild_id = ? AND channel_id = ?
   `).run(discordChannelId,guildId,subscription.channelId);
+  log.info("BargazBot subscription channel changed:", guildId, subscription.channelId, discordChannelId);
   return {success: true,subscription: {...subscription,discordChannelId}};
 }
 
@@ -985,33 +841,22 @@ async function resolveNotificationChannel(guild,subscription) {
   if (!notificationChannel || !notificationChannel.isTextBased()) {return null;}
   return notificationChannel;
 }
+async function tryAutopublish(message, guildId) {
+  if (!message || message.channel?.type !== discord.ChannelType.GuildAnnouncement) {return;}
+  try {await autopublish.publishMessage(message, guildId);}
+  catch (error) {log.error("BargazBot auto-publish failed:", guildId, message.id, error);}
+}
 async function sendNewNotification(guild,content,eventType,subscription,resetTracking = false) {
   const notificationChannel = await resolveNotificationChannel(guild,subscription);
   if (!notificationChannel) {return null;}
-  const messageOptions =
-    subscription.resolvedConfig ??
-    getNotificationMessageOptions(
-      guild.id,
-      content.platform,
-      content.channelId
-    );
+  const messageOptions = configForSubscription(guild.id, content, subscription);
 
-  const message =
-    await notificationChannel.send({
-      content:
-        buildMessageContent(
-          content,
-          subscription,
-          messageOptions
-        ),
-
-      embeds: [
-        buildNotificationEmbed(
-          content
-        )
-      ]
-    });
-    saveStoredMessage(guild.id,content.platform,getTrackingContentId(content),eventType,notificationChannel.id,message.id,resetTracking,String(content.channelId ?? ""),content.title ?? null);
+  const message = await notificationChannel.send({
+    content:buildMessageContent(content, subscription, messageOptions),
+    embeds:[buildNotificationEmbed(content)]
+  });
+  saveStoredMessage(guild.id,content.platform,getTrackingContentId(content),eventType,notificationChannel.id,message.id,resetTracking,String(content.channelId ?? ""),content.title ?? null);
+  await tryAutopublish(message, guild.id);
   return message;
 }
 async function editExistingNotification(guild,content,eventType,subscription) {
@@ -1019,48 +864,43 @@ async function editExistingNotification(guild,content,eventType,subscription) {
   if (!storedMessage) {return null;}
   const existing = await getExistingDiscordMessage(guild,storedMessage);
   if (!existing) {deleteStoredMessage(guild.id,content.platform,getTrackingContentId(content),eventType); return null;}
-  const messageOptions = subscription.resolvedConfig ?? getNotificationMessageOptions(guild.id,content.platform,content.channelId);
+  const messageOptions = configForSubscription(guild.id, content, subscription);
   await existing.message.edit({content:buildMessageContent(content,subscription,messageOptions,true), embeds: [buildNotificationEmbed(content)]});
+  await tryAutopublish(existing.message, guild.id);
   return existing.message;
 }
 async function sendOrUpdateGuildNotification(client,guildId,content,changes,subscription) {
   const eventType = getNotificationEventType(content,changes);
   const guild = await getGuild(client,guildId);
-  if (!guild) {console.warn(`Cannot send notification: guild ${guildId} was not found.`); return null;}
-  const memberGroups =
-    getGroupsForChannel(
-      guildId,
-      content.platform,
-      subscription.channelId ?? content.channelId
-    );
+  if (!guild) {log.warn("Cannot send notification: guild was not found.", guildId); return null;}
+  const memberGroups = getGroupsForChannel(guildId,content.platform,subscription.channelId ?? content.channelId);
+  const destinationChannelId = subscription.discordChannelId ?? null;
+  const memberGroup = memberGroups.find(group =>
+    destinationChannelId ? group.discordChannelId === destinationChannelId : !group.discordChannelId
+  ) ?? null;
 
-  const destinationChannelId =
-    subscription.discordChannelId ?? null;
-
-  const memberGroup =
-    memberGroups.find(group =>
-      destinationChannelId
-        ? group.discordChannelId === destinationChannelId
-        : !group.discordChannelId
-    ) ?? null;
-
-  subscription.resolvedConfig =
-    resolveNotificationConfig(
-      guildId,
-      {
-        platform:content.platform,
-        channelId:subscription.channelId ?? content.channelId,
-        groupId:memberGroup?.groupId ?? null,
-        isGroupPost:false
-      }
-    );
+  subscription.resolvedConfig = resolveNotificationConfig(guildId,{
+    platform:content.platform,
+    channelId:subscription.channelId ?? content.channelId,
+    groupId:memberGroup?.groupId ?? null,
+    isGroupPost:false
+  });
   const storedMessage = getStoredMessage(guildId,content.platform,getTrackingContentId(content),eventType);
-  if (storedMessage && !(content.platform === "kick" && changes?.isNew)) {const edited = await editExistingNotification(guild,content,eventType,subscription); if (edited) {return {action: "edited",message: edited};}}
+  if (storedMessage && !(content.platform === "kick" && changes?.isNew)) {
+    const edited = await editExistingNotification(guild,content,eventType,subscription);
+    if (edited) {return {action: "edited",message: edited};}
+  }
   const forceNew = content.platform === "kick" && Boolean(changes?.isNew);
-  if (!forceNew) {const reusable = await findReusableMessage(guild,content,subscription); if (reusable) {const edited = await editReusableMessage(guild,content,eventType,subscription,reusable); if (edited) {return {action: "edited",message: edited};}}}
-  if (changes?.ended) return null;
+  if (!forceNew) {
+    const reusable = await findReusableMessage(guild,content,subscription);
+    if (reusable) {
+      const edited = await editReusableMessage(guild,content,eventType,subscription,reusable);
+      if (edited) {return {action: "edited",message: edited};}
+    }
+  }
+  if (changes?.ended) {return null;}
   const isNewAnnouncement = changes?.isNew || changes?.wentLive || changes?.reconnected;
-  if (!isNewAnnouncement) return null;
+  if (!isNewAnnouncement) {return null;}
   const sent = await sendNewNotification(guild,content,eventType,subscription,content.platform === "kick" && Boolean(changes?.isNew));
   if (!sent) {return null;}
   return {action: "sent",message: sent};
@@ -1129,10 +969,7 @@ function buildGroupAnnouncement(group, activities, config = null) {
   const details = fill(group.details);
   if (details) {embed.setDescription(details.slice(0, 4000));}
 
-  const thumbnail =
-    group.thumbnailUrl ||
-    items.find(item => item.data.thumbnail)?.data.thumbnail;
-
+  const thumbnail = group.thumbnailUrl || items.find(item => item.data.thumbnail)?.data.thumbnail;
   if (thumbnail) {embed.setThumbnail(thumbnail);}
 
   return {content, embeds:[embed]};
@@ -1147,22 +984,16 @@ async function handleGroupAnnouncement(client, guildId, group, subscription, con
   const sameKindOnly = group.allowedKinds.length === 0;
 
   let candidates = recent.filter(activity =>
-    sameKindOnly
-      ? activity.kind === kind
-      : group.allowedKinds.includes(activity.kind)
+    sameKindOnly ? activity.kind === kind : group.allowedKinds.includes(activity.kind)
   );
 
   if (!group.allowMultiplePerChannel) {
     candidates = candidates.filter(activity =>
-      !(
-        activity.platform === content.platform &&
-        String(activity.channelId) === String(content.channelId)
-      )
+      !(activity.platform === content.platform && String(activity.channelId) === String(content.channelId))
     );
   }
 
   const batchKey = candidates[0]?.batchKey ?? String(now);
-
   const data = {
     title: content.title ?? "",
     url: content.url ?? "",
@@ -1192,64 +1023,254 @@ async function handleGroupAnnouncement(client, guildId, group, subscription, con
   const guild = await getGuild(client, guildId);
   if (!guild) {return null;}
 
-  const channel = await resolveNotificationChannel(guild, {
-    discordChannelId: group.discordChannelId
-  });
-
+  const channel = await resolveNotificationChannel(guild, {discordChannelId: group.discordChannelId});
   if (!channel) {return null;}
 
-  const config =
-    resolveNotificationConfig(
-      guildId,
-      {
-        platform:content.platform,
-        channelId:content.channelId,
-        groupId:group.groupId,
-        isGroupPost:true
-      }
-    );
+  const config = resolveNotificationConfig(guildId,{
+    platform:content.platform,
+    channelId:content.channelId,
+    groupId:group.groupId,
+    isGroupPost:true
+  });
 
   const payload = buildGroupAnnouncement(group, activities, config);
   const stored = getGroupMessage(guildId, group.groupId, batchKey, channel.id);
 
   if (stored) {
     const existing = await channel.messages.fetch(stored.discord_message_id).catch(() => null);
-
     if (existing) {
       const lastId = channel.lastMessageId ??
         (await channel.messages.fetch({limit:1}).catch(() => null))?.first()?.id;
-
       if (lastId === existing.id) {
         await existing.edit(payload);
-        saveGroupMessage(
-          guildId,
-          group.groupId,
-          batchKey,
-          stored.kind,
-          channel.id,
-          existing.id,
-          now
-        );
-
+        saveGroupMessage(guildId, group.groupId, batchKey, stored.kind, channel.id, existing.id, now);
         return {action:"edited", message:existing};
       }
     }
   }
 
   const message = await channel.send(payload);
-
-  saveGroupMessage(
-    guildId,
-    group.groupId,
-    batchKey,
-    kind,
-    channel.id,
-    message.id,
-    now
-  );
-
+  saveGroupMessage(guildId, group.groupId, batchKey, kind, channel.id, message.id, now);
+  await tryAutopublish(message, guildId);
   return {action:"sent", message};
 }
+
+/*
+=====================================================
+Test Notifications
+=====================================================
+*/
+
+function buildPresetContent(platform, index = 0) {
+  const key = PLATFORM_KEYS.includes(platform) ? platform : "youtube";
+  const preset = TEST_PRESETS[key];
+  return {...preset, title:`${preset.title}${index ? ` ${index + 1}` : ""}`};
+}
+
+function latestCachedContent(platform, channelId = null) {
+  const db = getDB();
+  const key = PLATFORM_KEYS.includes(platform) ? platform : "youtube";
+
+  if (key === "youtube") {
+    const row = channelId
+      ? db.prepare("SELECT * FROM youtube_content WHERE channel_id = ? ORDER BY COALESCE(scheduled_start_time, discovered_at) DESC LIMIT 1").get(String(channelId))
+      : db.prepare("SELECT * FROM youtube_content ORDER BY COALESCE(scheduled_start_time, discovered_at) DESC LIMIT 1").get();
+    if (!row) {return null;}
+    const channel = db.prepare("SELECT * FROM youtube_channels WHERE channel_id = ?").get(row.channel_id);
+    return {
+      platform:"youtube", id:row.video_id, channelId:row.channel_id,
+      title:row.title, url:`https://www.youtube.com/watch?v=${row.video_id}`,
+      channelName:channel?.channel_name ?? "Creator", channelHandle:channel?.channel_handle ?? null,
+      contentType:row.content_type, thumbnail:row.thumbnail_url ?? null,
+      scheduledStartTime:row.scheduled_start_time ?? null,
+      isEnded:Boolean(row.ended_at),
+      isLive:row.content_type === "stream" && !row.ended_at,
+      isScheduled:Boolean(row.scheduled_start_time) && !row.ended_at
+    };
+  }
+
+  if (key === "twitch") {
+    const row = channelId
+      ? db.prepare("SELECT * FROM twitch_content WHERE channel_id = ? ORDER BY discovered_at DESC LIMIT 1").get(String(channelId))
+      : db.prepare("SELECT * FROM twitch_content ORDER BY discovered_at DESC LIMIT 1").get();
+    if (!row) {return null;}
+    const channel = db.prepare("SELECT * FROM twitch_channels WHERE channel_id = ?").get(row.channel_id);
+    return {
+      platform:"twitch", id:row.stream_id, channelId:row.channel_id,
+      title:row.title, url:`https://www.twitch.tv/${channel?.channel_handle ?? ""}`,
+      channelName:channel?.channel_name ?? "Creator", channelHandle:channel?.channel_handle ?? null,
+      contentType:"stream", thumbnail:row.thumbnail_url ?? null,
+      scheduledStartTime:null, isEnded:Boolean(row.ended_at),
+      isLive:!row.ended_at, isScheduled:false
+    };
+  }
+
+  const row = channelId
+    ? db.prepare("SELECT * FROM kick_content WHERE channel_id = ? ORDER BY discovered_at DESC LIMIT 1").get(String(channelId))
+    : db.prepare("SELECT * FROM kick_content ORDER BY discovered_at DESC LIMIT 1").get();
+  if (!row) {return null;}
+  const channel = db.prepare("SELECT * FROM kick_channels WHERE channel_id = ?").get(row.channel_id);
+  return {
+    platform:"kick", id:row.channel_id, channelId:row.channel_id,
+    title:row.title, url:`https://kick.com/${channel?.channel_handle ?? ""}`,
+    channelName:channel?.channel_name ?? "Creator", channelHandle:channel?.channel_handle ?? null,
+    contentType:"stream", thumbnail:row.thumbnail_url ?? null,
+    scheduledStartTime:null, isEnded:Boolean(row.ended_at),
+    isLive:!row.ended_at, isScheduled:false
+  };
+}
+
+function buildFakeGroupActivities(group, useLatest, platform) {
+  const members = getGroupMembers(group.guildId, group.groupId);
+  const seeds = members.length ? members : [{platform:platform ?? "youtube", channelId:"fake-creator"}];
+  const now = Date.now();
+  return seeds.slice(0, 5).map((member, index) => {
+    const content = (useLatest ? latestCachedContent(member.platform, member.channelId) : null) ?? buildPresetContent(member.platform, index);
+    return {
+      guildId:group.guildId,
+      groupId:group.groupId,
+      platform:member.platform,
+      channelId:member.channelId,
+      contentId:`test-${index}`,
+      kind:"content",
+      nickname:`Test Creator ${index + 1}`,
+      data:{
+        title:content.title,
+        url:content.url,
+        channelName:`Test Creator ${index + 1}`,
+        thumbnail:content.thumbnail,
+        isLive:content.isLive,
+        isScheduled:content.isScheduled,
+        isEnded:content.isEnded
+      },
+      batchKey:`test-${now}`,
+      seenAt:now
+    };
+  });
+}
+
+export function getTestTargets(guildId) {
+  return listNotificationConfigTargets(guildId).map(target => ({
+    value:`config:${target.value}`,
+    label:target.label,
+    scope:target.scope,
+    scopeKey:target.scopeKey,
+    platform:target.scope === "platform"
+      ? target.scopeKey
+      : target.scope === "creator"
+        ? String(target.scopeKey).split(":")[0]
+        : null,
+    groupId:target.scope === "group" ? target.scopeKey : null,
+    config:target.config
+  }));
+}
+
+async function resolveTestChannel(guild, discordChannelId = null) {
+  let channel = null;
+  if (discordChannelId) {channel = guild.channels.cache.get(discordChannelId) ?? await guild.channels.fetch(discordChannelId).catch(() => null);}
+  if (!channel || !channel.isTextBased()) {channel = await channelManager.ensureChannel(guild,"notifications");}
+  return channel?.isTextBased() ? channel : null;
+}
+
+export async function sendTestNotification(client, guildId, target, useLatest = false) {
+  const guild = await getGuild(client, guildId);
+  if (!guild) {return {success:false, reason:"guild-unavailable"};}
+  const scope = target.scope ?? "default";
+  const scopeKey = target.scopeKey ?? "";
+
+  if (scope === "group") {
+    const group = findGroup(guildId, scopeKey);
+    if (!group) {return {success:false, reason:"not-found"};}
+    const members = getGroupMembers(guildId, group.groupId);
+    const platform = target.platform ?? members[0]?.platform ?? "youtube";
+    const activities = buildFakeGroupActivities(group, useLatest, platform);
+    const config = resolveNotificationConfig(guildId,{
+      platform, channelId:activities[0].channelId, groupId:group.groupId, isGroupPost:true
+    });
+    const channel = await resolveTestChannel(guild, group.discordChannelId);
+    if (!channel) {return {success:false, reason:"channel-unavailable"};}
+    const message = await channel.send(buildGroupAnnouncement(group, activities, config));
+    log.info("BargazBot test notification sent:", guildId, "group", group.groupId, message.id);
+    return {success:true, message, groupId:group.groupId};
+  }
+
+  const platform = target.platform ?? (scope === "creator" ? String(scopeKey).split(":")[0] : "youtube");
+  const creatorChannelId = scope === "creator" ? String(scopeKey).split(":").slice(1).join(":") : null;
+  const content = (useLatest ? latestCachedContent(platform, creatorChannelId) : null) ?? buildPresetContent(platform);
+  const config = getNotificationConfig(guildId, scope, scopeKey) ?? emptyNotificationConfig();
+  const discordChannelId = scope === "creator"
+    ? (getGuildSubscriptions(guildId, platform).find(sub => sub.channelId === creatorChannelId)?.discordChannelId ?? null)
+    : null;
+  const channel = await resolveTestChannel(guild, discordChannelId);
+  if (!channel) {return {success:false, reason:"channel-unavailable"};}
+  const subscription = {nickname:content.channelName, customMessage:null, resolvedConfig:config};
+  const message = await channel.send({
+    content:buildMessageContent(content, subscription, config),
+    embeds:[buildNotificationEmbed(content)]
+  });
+  log.info("BargazBot test notification sent:", guildId, scope, scopeKey, message.id);
+  return {success:true, message, platform};
+}
+
+/*
+=====================================================
+Direct Message Notifications
+=====================================================
+*/
+
+function resolveDmConfig(userId, platform, channelId) {
+  return getUserDmConfig(userId, "creator", `${platform}:${channelId}`)
+    ?? getUserDmConfig(userId, "platform", platform)
+    ?? getUserDmConfig(userId, "default", "")
+    ?? emptyUserDmConfig();
+}
+
+export async function addDmChannel(userId, input, nickname, platform) {
+  const key = normalizePlatform(platform);
+  const channel = await getPlatformModule(key).resolveAndSaveChannel(input);
+  if (!channel) {return {success:false, reason:"not-found"};}
+  const added = featureSettings.addDmSubscription(userId, key, channel.channel_id, nickname);
+  return added ? {success:true, channel} : {success:false, reason:"already-exists", channel};
+}
+
+export function removeDmChannel(userId, platform, channelId) {
+  return featureSettings.removeDmSubscription(userId, normalizePlatform(platform), String(channelId));
+}
+
+export function listDmChannels(userId, platform = null) {return getUserDmSubscriptions(userId, platform);}
+
+export async function broadcastDmContent(client, content) {
+  const rows = getDB().prepare(`
+    SELECT user_id, nickname FROM user_dm_subscriptions
+    WHERE platform = ? AND channel_id = ?
+  `).all(content.platform, String(content.channelId));
+  const results = [];
+  for (const row of rows) {
+    if (!featureSettings.canUseDmFeatures(row.user_id)) {continue;}
+    const config = resolveDmConfig(row.user_id, content.platform, content.channelId);
+    const subscription = {nickname:row.nickname, customMessage:null, resolvedConfig:config};
+    const user = await client.users.fetch(row.user_id).catch(() => null);
+    if (!user) {continue;}
+    try {
+      const message = await user.send({
+        content:buildMessageContent(content, subscription, config),
+        embeds:[buildNotificationEmbed(content)]
+      });
+      log.info("BargazBot DM notification sent:", row.user_id, content.platform, message.id);
+      results.push({userId:row.user_id, success:true, messageId:message.id});
+    } catch (error) {
+      log.error("BargazBot DM notification failed:", row.user_id, error);
+      results.push({userId:row.user_id, success:false});
+    }
+  }
+  return results;
+}
+
+/*
+=====================================================
+Broadcast / Refresh
+=====================================================
+*/
 
 export async function broadcastContent(client,content,changes = {}) {
   const subscriptions = getSubscribedGuilds(content.platform,content.channelId);
@@ -1257,63 +1278,33 @@ export async function broadcastContent(client,content,changes = {}) {
   for (const subscription of subscriptions) {
     try {
       const mapped = {
-        discordChannelId:
-          subscription.discord_channel_id ??
-          null,
-
-        customMessage:
-          subscription.custom_message ??
-          null,
-
-        nickname:
-          subscription.nickname ??
-          null,
-
-        channelId:
-          subscription.channel_id ??
-          null
+        discordChannelId:subscription.discord_channel_id ?? null,
+        customMessage:subscription.custom_message ?? null,
+        nickname:subscription.nickname ?? null,
+        channelId:subscription.channel_id ?? null
       };
 
-      const groups =
-        getGroupsForChannel(
-          subscription.guild_id,
-          content.platform,
-          subscription.channel_id
-        );
+      const groups = getGroupsForChannel(subscription.guild_id,content.platform,subscription.channel_id);
 
-      const result =
-        await sendOrUpdateGuildNotification(
-          client,
-          subscription.guild_id,
-          content,
-          changes,
-          mapped
-        );
+      const result = await sendOrUpdateGuildNotification(client,subscription.guild_id,content,changes,mapped);
 
       for (const group of groups) {
         try {
-          await handleGroupAnnouncement(
-            client,
-            subscription.guild_id,
-            group,
-            mapped,
-            content,
-            changes
-          );
+          await handleGroupAnnouncement(client,subscription.guild_id,group,mapped,content,changes);
         } catch (error) {
-          console.error(
-            `Failed group ${group.groupId} announcement for guild ${subscription.guild_id}:`,
-            error
-          );
+          log.error("BargazBot group announcement failed:", group.groupId, subscription.guild_id, error);
         }
       }
 
       results.push({guildId:subscription.guild_id, success:Boolean(result), action:result?.action ?? null, messageId:result?.message?.id ?? null});
     } catch (error) {
-      console.error(`Failed to process ${content.platform} notification for guild ${subscription.guild_id}:`, error);
+      log.error("BargazBot notification failed:", content.platform, subscription.guild_id, error);
       results.push({guildId:subscription.guild_id, success: false, action: null, messageId: null});
     }
-  } return results;
+  }
+  const dmResults = await broadcastDmContent(client, content);
+  results.push(...dmResults.map(result => ({...result, dm:true})));
+  return results;
 }
 export async function processResult(client,result) {
   if (!result || !result.content || !result.changes) {return [];}
@@ -1383,13 +1374,16 @@ export async function refreshSubscription(client,guildId,nickname,platform) {
     const guild = await getGuild(client,guildId);
     if (!guild) {releaseRefresh(allowance.usageId); return {success:false,reason:"guild-unavailable",subscription};}
     const eventType = getNotificationEventType(content,result.changes ?? {});
+    subscription.resolvedConfig = resolveNotificationConfig(guildId,{
+      platform:content.platform, channelId:subscription.channelId, groupId:null, isGroupPost:false
+    });
     const message = await sendNewNotification(guild,content,eventType,subscription,true);
     if (!message) {releaseRefresh(allowance.usageId); return {success:false,reason:"channel-unavailable",subscription};}
     messagePosted = true;
     return {success:true,subscription,content,messageId:message.id,remaining:allowance.remaining,results};
   } catch (error) {
     if (!messagePosted) releaseRefresh(allowance.usageId);
-    console.error(`Manual ${key} refresh failed for guild ${guildId}:`,error);
+    log.error("Manual refresh failed:", key, guildId, error);
     return {success:false,reason:"refresh-error",subscription};
   }
 }
