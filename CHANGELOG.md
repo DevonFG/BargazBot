@@ -19,6 +19,16 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.10.2-dev.4 - Nov 21
+- Restored missing sotrage.js helper for featureSettings.js and notifications.js can load
+- Added missing DM tables user_dm_subscriptions, user_dm_configsm and user_dm_settings.timezone
+- Added missing feature settings
+- Added missing setup/config helpers
+- Added missing DM helpers
+- /data delete scope:This DM now clears all DM settings, subscriptions, and configs
+- Added autopublish.publishAll() so /autopublish all works and gets logged
+- Configured new message defaults
+
 ## v26.10.2-dev.3 - Nov 21
 - Replaced /channels with /features-config with a popout menu for all configuration
 - Added feature toggles for most features though new /feature-config

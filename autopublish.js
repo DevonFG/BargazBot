@@ -197,6 +197,48 @@ export async function publishMessage(message, guildId) {
   }
 }
 
+export async function publishAll(client, guildId) {
+  const result = {published: 0, failed: 0};
+  let guild = null;
+
+  try {
+    guild = await client.guilds.fetch(guildId);
+    const config = listAutopublish(guildId);
+    const channels = config.allEnabled
+      ? [...guild.channels.cache.values()].filter(channel => isAnnouncementChannel(channel))
+      : config.channels
+        .map(channelId => guild.channels.cache.get(channelId))
+        .filter(channel => isAnnouncementChannel(channel));
+
+    for (const channel of channels) {
+      let messages;
+      try {
+        messages = await channel.messages.fetch({limit: 50});
+      } catch (error) {
+        log.warn("BargazBot autopublish channel fetch failed:", guildId, channel.id, error.message ?? error);
+        result.failed++;
+        continue;
+      }
+
+      for (const message of messages.values()) {
+        if (message.author?.bot || message.system || message.crosspostable === false) {continue;}
+        const outcome = await publishMessage(message, guildId);
+        if (outcome.success) {result.published++;} else {result.failed++;}
+      }
+    }
+  } catch (error) {
+    log.error("BargazBot autopublish all failed:", guildId, error);
+    await logging.logGuildError(guild, {
+      title: "BargazBot Auto Publish All Failed",
+      description: "BargazBot could not run auto publish for this server.",
+      fields: [{name: "Error", value: String(error?.message ?? error).slice(0, 1000)}]
+    }).catch(logError => log.warn("BargazBot autopublish error log failed:", logError.message ?? logError));
+    result.failed++;
+  }
+
+  return result;
+}
+
 async function handleMessageCreate(message) {
   if (!client || !message.guild || message.author?.bot || message.system) {return;}
   if (!isAnnouncementChannel(message.channel)) {return;}

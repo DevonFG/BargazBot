@@ -358,8 +358,28 @@ export function initDB() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (user_id, guild_id),
       FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS user_dm_settings (
+      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS user_dm_subscriptions (
+      user_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      nickname TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, platform, channel_id),
+      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS user_dm_configs (
+      user_id TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      scope_key TEXT NOT NULL DEFAULT '',
+      custom_message TEXT,
+      mention_roles TEXT NOT NULL DEFAULT '[]',
+      mention_users TEXT NOT NULL DEFAULT '[]',
+      show_creator_on_edit INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, scope, scope_key),
+      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS feedback_settings (
       user_id TEXT PRIMARY KEY,
       dms_enabled INTEGER NOT NULL DEFAULT 1,
       notifications_enabled INTEGER NOT NULL DEFAULT 0,
@@ -582,6 +602,7 @@ export function initDB() {
   addColumnIfMissing("guild_settings", "welcome_message", "TEXT");
   addColumnIfMissing("guild_settings", "goodbye_message", "TEXT");
   addColumnIfMissing("guild_settings", "notice_channel_id", "TEXT");
+  addColumnIfMissing("user_dm_settings", "timezone", "TEXT");
 
   const notificationMessageColumns = db.prepare("PRAGMA table_info(notification_messages)").all().map(column => column.name);
   if (!notificationMessageColumns.includes("creator_channel_id")) {
@@ -672,4 +693,435 @@ export function closeDB() {
   if (!db || !db.open) {return true;}
   try {db.close(); console.log("SQLite database closed.");                   return true;
   } catch (error) {console.error("Unable to close SQLite database:", error); return false;}
+}
+
+/* Feature settings, DM settings, and setup state helpers. */
+
+const FEATURE_ALIASES = {
+  logging: "logs",
+  logger: "logs",
+  notification: "notifications",
+  test: "notifications",
+  notification_test: "notifications"
+};
+
+export const FEATURE_KEYS = [
+  "notifications",
+  "welcome",
+  "goodbye",
+  "logs",
+  "updates",
+  "status",
+  "inactivity",
+  "timers",
+  "birthdays",
+  "autopublish",
+  "feedback",
+  "dm"
+];
+
+export const FEATURE_DEFAULTS = {
+  notifications: {enabled: false, responseType: null},
+  welcome:       {enabled: false, responseType: null},
+  goodbye:       {enabled: false, responseType: null},
+  logs:          {enabled: true,  responseType: "message"},
+  updates:       {enabled: true,  responseType: null},
+  status:        {enabled: true,  responseType: null},
+  inactivity:    {enabled: false, responseType: "message"},
+  timers:        {enabled: false, responseType: null},
+  birthdays:     {enabled: false, responseType: null},
+  autopublish:   {enabled: false, responseType: null},
+  feedback:      {enabled: false, responseType: null},
+  dm:            {enabled: false, responseType: null}
+};
+
+function canonicalFeature(feature) {
+  const key = String(feature ?? "");
+  return FEATURE_ALIASES[key] ?? key;
+}
+
+function toBoolean(value) {
+  return value === true || value === 1;
+}
+
+function normalizeResponseType(value, fallback = null) {
+  if (value === "message" || value === "ephemeral") {return value;}
+  return fallback;
+}
+
+function parseJsonArray(value) {
+  if (!value) {return [];}
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function ensureUserRow(userId) {
+  getDB().prepare("INSERT OR IGNORE INTO users (user_id) VALUES (?)").run(String(userId));
+}
+
+function ensureGuildRow(guildId) {
+  getDB().prepare("INSERT OR IGNORE INTO guilds (guild_id) VALUES (?)").run(String(guildId));
+}
+
+export function getFeatureSetting(guildId, feature) {
+  const key = canonicalFeature(feature);
+  const defaults = FEATURE_DEFAULTS[key] ?? {enabled: false, responseType: null};
+  const db = getDB();
+  const row = db.prepare(
+    "SELECT enabled FROM feature_settings WHERE guild_id = ? AND feature = ?"
+  ).get(guildId, key);
+  const response = db.prepare(
+    "SELECT response_type FROM response_settings WHERE guild_id = ? AND scope = 'feature' AND scope_key = ?"
+  ).get(guildId, key);
+
+  return {
+    feature: key,
+    enabled: row ? toBoolean(row.enabled) : Boolean(defaults.enabled),
+    responseType: response ? normalizeResponseType(response.response_type) : defaults.responseType
+  };
+}
+
+export function getFeatureSettings(guildId) {
+  return Object.fromEntries(FEATURE_KEYS.map(feature => [feature, getFeatureSetting(guildId, feature)]));
+}
+
+export function setFeatureSetting(guildId, feature, patch = {}) {
+  const key = canonicalFeature(feature);
+  const db = getDB();
+  ensureGuildRow(guildId);
+
+  if (Object.hasOwn(patch, "enabled")) {
+    db.prepare(`
+      INSERT INTO feature_settings (guild_id, feature, feature_key, enabled, created_at, updated_at)
+      VALUES (?, ?, '', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(guild_id, feature) DO UPDATE SET
+        enabled = excluded.enabled,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(guildId, key, patch.enabled ? 1 : 0);
+  }
+
+  if (Object.hasOwn(patch, "responseType")) {
+    db.prepare(`
+      INSERT INTO response_settings (guild_id, scope, scope_key, target_key, response_type, created_at, updated_at)
+      VALUES (?, 'feature', ?, '', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(guild_id, scope, scope_key) DO UPDATE SET
+        response_type = excluded.response_type,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(guildId, key, normalizeResponseType(patch.responseType, "") ?? "");
+  }
+
+  return getFeatureSetting(guildId, key);
+}
+
+export function setAllFeatureResponseTypes(guildId, responseType) {
+  const value = normalizeResponseType(responseType, "") ?? "";
+  const db = getDB();
+  ensureGuildRow(guildId);
+  const statement = db.prepare(`
+    INSERT INTO response_settings (guild_id, scope, scope_key, target_key, response_type, created_at, updated_at)
+    VALUES (?, 'feature', ?, '', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id, scope, scope_key) DO UPDATE SET
+      response_type = excluded.response_type,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+
+  for (const feature of FEATURE_KEYS) {statement.run(guildId, feature, value);}
+  return normalizeResponseType(value);
+}
+
+export function getCommandResponseType(guildId) {
+  const row = getDB().prepare(`
+    SELECT response_type
+    FROM response_settings
+    WHERE guild_id = ? AND scope = 'default' AND scope_key = ''
+  `).get(guildId);
+
+  return normalizeResponseType(row?.response_type, "ephemeral");
+}
+
+export function setCommandResponseType(guildId, responseType) {
+  const value = normalizeResponseType(responseType);
+  if (!value) {return null;}
+  ensureGuildRow(guildId);
+  getDB().prepare(`
+    INSERT INTO response_settings (guild_id, scope, scope_key, target_key, response_type, created_at, updated_at)
+    VALUES (?, 'default', '', '', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id, scope, scope_key) DO UPDATE SET
+      response_type = excluded.response_type,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(guildId, value);
+  return value;
+}
+
+export function getGuildWelcomeMessage(guildId) {
+  return getDB().prepare(
+    "SELECT welcome_message FROM guild_settings WHERE guild_id = ?"
+  ).get(guildId)?.welcome_message ?? null;
+}
+
+export function setGuildWelcomeMessage(guildId, message) {
+  ensureGuildRow(guildId);
+  getDB().prepare(`
+    INSERT INTO guild_settings (guild_id, welcome_message, created_at, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      welcome_message = excluded.welcome_message,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(guildId, message ?? null);
+  return message ?? null;
+}
+
+export function getPrivacyNoticeChannel(guildId) {
+  return getDB().prepare(
+    "SELECT notice_channel_id FROM guild_settings WHERE guild_id = ?"
+  ).get(guildId)?.notice_channel_id ?? null;
+}
+
+export function savePrivacyNoticeChannel(guildId, channelId) {
+  ensureGuildRow(guildId);
+  getDB().prepare(`
+    INSERT INTO guild_settings (guild_id, notice_channel_id, created_at, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      notice_channel_id = excluded.notice_channel_id,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(guildId, channelId ?? null);
+  return channelId ?? null;
+}
+
+export function isGuildSetupComplete(guildId) {
+  const db = getDB();
+  const state = db.prepare(
+    "SELECT setup_complete FROM guild_setup_state WHERE guild_id = ?"
+  ).get(guildId);
+  if (state) {return toBoolean(state.setup_complete);}
+  const settings = db.prepare(
+    "SELECT setup_complete FROM guild_settings WHERE guild_id = ?"
+  ).get(guildId);
+  return toBoolean(settings?.setup_complete);
+}
+
+export function markGuildSetupComplete(guildId, channelId = null, installerId = null) {
+  const db = getDB();
+  ensureGuildRow(guildId);
+  db.prepare(`
+    INSERT INTO guild_setup_state
+      (guild_id, setup_complete, setup_channel_id, installer_user_id, setup_completed_at, created_at, updated_at)
+    VALUES (?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      setup_complete = 1,
+      setup_channel_id = COALESCE(excluded.setup_channel_id, guild_setup_state.setup_channel_id),
+      installer_user_id = COALESCE(excluded.installer_user_id, guild_setup_state.installer_user_id),
+      setup_completed_at = excluded.setup_completed_at,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(guildId, channelId ?? null, installerId ?? null, Date.now());
+  db.prepare(`
+    UPDATE guild_settings
+    SET setup_complete = 1,
+        installer_user_id = COALESCE(?, installer_user_id),
+        updated_at = CURRENT_TIMESTAMP
+    WHERE guild_id = ?
+  `).run(installerId ?? null, guildId);
+  return true;
+}
+
+export function resetGuildSetup(guildId) {
+  const db = getDB();
+  ensureGuildRow(guildId);
+  db.prepare(`
+    UPDATE guild_settings
+    SET announcement_channel_id = NULL,
+        welcome_channel_id = NULL,
+        goodbye_channel_id = NULL,
+        logs_channel_id = NULL,
+        updates_channel_id = NULL,
+        status_channel_id = NULL,
+        notice_channel_id = NULL,
+        welcome_message = NULL,
+        goodbye_message = NULL,
+        setup_complete = 0,
+        installer_user_id = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE guild_id = ?
+  `).run(guildId);
+  db.prepare("DELETE FROM guild_setup_state WHERE guild_id = ?").run(guildId);
+  db.prepare("DELETE FROM feature_settings WHERE guild_id = ?").run(guildId);
+  db.prepare("DELETE FROM response_settings WHERE guild_id = ?").run(guildId);
+  return true;
+}
+
+export function emptyUserDmConfig() {
+  return {
+    customMessage: null,
+    mentionRoles: [],
+    mentionUsers: [],
+    showCreatorOnEdit: false
+  };
+}
+
+function mapUserDmSettings(userId, row) {
+  return {
+    userId: row?.user_id ?? String(userId),
+    dmEnabled: row ? toBoolean(row.dms_enabled) : true,
+    notificationsEnabled: row ? toBoolean(row.notifications_enabled) : false,
+    remindersEnabled: row ? toBoolean(row.reminders_enabled) : false,
+    birthdaysEnabled: row ? toBoolean(row.birthdays_enabled) : false,
+    feedbackEnabled: row ? toBoolean(row.feedback_enabled) : true,
+    feedbackDelivery: row?.feedback_method ?? "dm",
+    feedbackEmail: row?.feedback_email ?? null,
+    storageNoticeSent: row ? toBoolean(row.storage_notice_sent) : false,
+    noticeChannelId: row?.notice_channel_id ?? null,
+    timezone: row?.timezone ?? null
+  };
+}
+
+export function getUserDmSettings(userId) {
+  const row = getDB().prepare(
+    "SELECT * FROM user_dm_settings WHERE user_id = ?"
+  ).get(String(userId));
+  return mapUserDmSettings(userId, row ?? null);
+}
+
+export function setUserDmSetting(userId, patch = {}) {
+  const current = getUserDmSettings(userId);
+  const db = getDB();
+  ensureUserRow(userId);
+
+  const feedbackDelivery = Object.hasOwn(patch, "feedbackDelivery")
+    ? patch.feedbackDelivery
+    : (Object.hasOwn(patch, "feedbackMethod") ? patch.feedbackMethod : current.feedbackDelivery);
+
+  db.prepare(`
+    INSERT INTO user_dm_settings (
+      user_id, dms_enabled, notifications_enabled, reminders_enabled,
+      birthdays_enabled, feedback_enabled, feedback_method, feedback_email,
+      storage_notice_sent, notice_channel_id, timezone, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id) DO UPDATE SET
+      dms_enabled = excluded.dms_enabled,
+      notifications_enabled = excluded.notifications_enabled,
+      reminders_enabled = excluded.reminders_enabled,
+      birthdays_enabled = excluded.birthdays_enabled,
+      feedback_enabled = excluded.feedback_enabled,
+      feedback_method = excluded.feedback_method,
+      feedback_email = excluded.feedback_email,
+      storage_notice_sent = excluded.storage_notice_sent,
+      notice_channel_id = excluded.notice_channel_id,
+      timezone = excluded.timezone,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    String(userId),
+    Object.hasOwn(patch, "dmEnabled") ? (patch.dmEnabled ? 1 : 0) : (current.dmEnabled ? 1 : 0),
+    Object.hasOwn(patch, "notificationsEnabled") ? (patch.notificationsEnabled ? 1 : 0) : (current.notificationsEnabled ? 1 : 0),
+    Object.hasOwn(patch, "remindersEnabled") ? (patch.remindersEnabled ? 1 : 0) : (current.remindersEnabled ? 1 : 0),
+    Object.hasOwn(patch, "birthdaysEnabled") ? (patch.birthdaysEnabled ? 1 : 0) : (current.birthdaysEnabled ? 1 : 0),
+    Object.hasOwn(patch, "feedbackEnabled") ? (patch.feedbackEnabled ? 1 : 0) : (current.feedbackEnabled ? 1 : 0),
+    feedbackDelivery ?? "dm",
+    Object.hasOwn(patch, "feedbackEmail") ? patch.feedbackEmail : current.feedbackEmail,
+    Object.hasOwn(patch, "storageNoticeSent") ? (patch.storageNoticeSent ? 1 : 0) : (current.storageNoticeSent ? 1 : 0),
+    Object.hasOwn(patch, "noticeChannelId") ? patch.noticeChannelId : current.noticeChannelId,
+    Object.hasOwn(patch, "timezone") ? patch.timezone : current.timezone
+  );
+
+  return getUserDmSettings(userId);
+}
+
+export function clearUserDmSettings(userId) {
+  const db = getDB();
+  for (const table of ["user_dm_settings", "user_dm_subscriptions", "user_dm_configs"]) {
+    db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(String(userId));
+  }
+  return true;
+}
+
+export function getUserDmSubscriptions(userId, platform = null) {
+  const db = getDB();
+  const rows = platform
+    ? db.prepare(
+        "SELECT user_id, platform, channel_id, nickname FROM user_dm_subscriptions WHERE user_id = ? AND platform = ? ORDER BY platform, channel_id"
+      ).all(String(userId), String(platform).toLowerCase())
+    : db.prepare(
+        "SELECT user_id, platform, channel_id, nickname FROM user_dm_subscriptions WHERE user_id = ? ORDER BY platform, channel_id"
+      ).all(String(userId));
+
+  return rows.map(row => ({
+    userId: row.user_id,
+    platform: row.platform,
+    channelId: row.channel_id,
+    nickname: row.nickname ?? null
+  }));
+}
+
+export function addUserDmSubscription(userId, platform, channelId, nickname = null) {
+  ensureUserRow(userId);
+  const result = getDB().prepare(`
+    INSERT OR IGNORE INTO user_dm_subscriptions
+      (user_id, platform, channel_id, nickname, created_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).run(String(userId), String(platform).toLowerCase(), String(channelId), nickname ?? null);
+  return result.changes > 0;
+}
+
+export function removeUserDmSubscription(userId, platform, channelId) {
+  const result = getDB().prepare(`
+    DELETE FROM user_dm_subscriptions
+    WHERE user_id = ? AND platform = ? AND channel_id = ?
+  `).run(String(userId), String(platform).toLowerCase(), String(channelId));
+  return result.changes > 0;
+}
+
+export function getUserDmConfig(userId, scope, scopeKey = "") {
+  const row = getDB().prepare(`
+    SELECT custom_message, mention_roles, mention_users, show_creator_on_edit
+    FROM user_dm_configs
+    WHERE user_id = ? AND scope = ? AND scope_key = ?
+  `).get(String(userId), String(scope ?? ""), String(scopeKey ?? ""));
+
+  if (!row) {return null;}
+  return {
+    customMessage: row.custom_message ?? null,
+    mentionRoles: parseJsonArray(row.mention_roles),
+    mentionUsers: parseJsonArray(row.mention_users),
+    showCreatorOnEdit: toBoolean(row.show_creator_on_edit)
+  };
+}
+
+export function setUserDmConfig(userId, scope, scopeKey = "", patch = {}) {
+  const current = getUserDmConfig(userId, scope, scopeKey) ?? emptyUserDmConfig();
+  const next = {
+    customMessage: Object.hasOwn(patch, "customMessage") ? patch.customMessage : current.customMessage,
+    mentionRoles: Object.hasOwn(patch, "mentionRoles") ? (patch.mentionRoles ?? []) : current.mentionRoles,
+    mentionUsers: Object.hasOwn(patch, "mentionUsers") ? (patch.mentionUsers ?? []) : current.mentionUsers,
+    showCreatorOnEdit: Object.hasOwn(patch, "showCreatorOnEdit")
+      ? Boolean(patch.showCreatorOnEdit)
+      : current.showCreatorOnEdit
+  };
+  ensureUserRow(userId);
+  getDB().prepare(`
+    INSERT INTO user_dm_configs (
+      user_id, scope, scope_key, custom_message, mention_roles, mention_users,
+      show_creator_on_edit, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, scope, scope_key) DO UPDATE SET
+      custom_message = excluded.custom_message,
+      mention_roles = excluded.mention_roles,
+      mention_users = excluded.mention_users,
+      show_creator_on_edit = excluded.show_creator_on_edit,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    String(userId),
+    String(scope ?? ""),
+    String(scopeKey ?? ""),
+    next.customMessage ?? null,
+    JSON.stringify(next.mentionRoles),
+    JSON.stringify(next.mentionUsers),
+    next.showCreatorOnEdit ? 1 : 0
+  );
+  return next;
 }
