@@ -60,6 +60,7 @@ export function initDB() {
       logs_channel_id TEXT,
       updates_channel_id TEXT,
       status_channel_id TEXT,
+      notification_dedupe_hours INTEGER NOT NULL DEFAULT 24,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
@@ -200,12 +201,91 @@ export function initDB() {
       platform TEXT NOT NULL,
       content_id TEXT NOT NULL,
       event_type TEXT NOT NULL,
+      creator_channel_id TEXT,
+      content_title TEXT,
       discord_channel_id TEXT NOT NULL,
       discord_message_id TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (guild_id, platform, content_id, event_type),
       FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS notification_message_options (
+      guild_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      mention_roles TEXT NOT NULL DEFAULT '[]',
+      mention_users TEXT NOT NULL DEFAULT '[]',
+      show_creator_on_edit INTEGER NOT NULL DEFAULT 0 CHECK (show_creator_on_edit IN (0,1)),
+      allowed_kinds TEXT NOT NULL DEFAULT '[]',
+      allow_multiple_per_channel INTEGER NOT NULL DEFAULT 0 CHECK (allow_multiple_per_channel IN (0,1)),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, platform, channel_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS notification_configs (
+      guild_id TEXT NOT NULL,
+      scope TEXT NOT NULL CHECK (scope IN ('default','platform','creator')),
+      scope_key TEXT NOT NULL DEFAULT '',
+      custom_message TEXT,
+      mention_roles TEXT NOT NULL DEFAULT '[]',
+      mention_users TEXT NOT NULL DEFAULT '[]',
+      show_creator_on_edit INTEGER NOT NULL DEFAULT 0 CHECK (show_creator_on_edit IN (0,1)),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, scope, scope_key),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS notification_groups (
+      guild_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      title TEXT,
+      details TEXT,
+      thumbnail_url TEXT,
+      window_minutes INTEGER NOT NULL DEFAULT 60,
+      discord_channel_id TEXT,
+      custom_message TEXT,
+      mention_roles TEXT NOT NULL DEFAULT '[]',
+      mention_users TEXT NOT NULL DEFAULT '[]',
+      show_creator_on_edit INTEGER NOT NULL DEFAULT 0 CHECK (show_creator_on_edit IN (0,1)),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, group_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS notification_group_members (
+      guild_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, group_id, platform, channel_id),
+      FOREIGN KEY (guild_id, group_id) REFERENCES notification_groups(guild_id, group_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS notification_group_activity (
+      guild_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      content_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      nickname TEXT,
+      content_json TEXT NOT NULL DEFAULT '{}',
+      batch_key TEXT NOT NULL,
+      seen_at INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, group_id, platform, channel_id, content_id, kind),
+      FOREIGN KEY (guild_id, group_id) REFERENCES notification_groups(guild_id, group_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS notification_group_messages (
+      guild_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      batch_key TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      discord_channel_id TEXT NOT NULL,
+      discord_message_id TEXT NOT NULL,
+      seen_at INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, group_id, batch_key, kind, discord_channel_id),
+      FOREIGN KEY (guild_id, group_id) REFERENCES notification_groups(guild_id, group_id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS notification_refresh_usage (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       guild_id TEXT NOT NULL,
@@ -220,12 +300,58 @@ export function initDB() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
   `);
 
+  db.exec(`
+    INSERT INTO notification_configs (
+      guild_id, scope, scope_key, mention_roles, mention_users, show_creator_on_edit
+    )
+    SELECT guild_id, 'creator', platform || ':' || channel_id, mention_roles, mention_users, show_creator_on_edit
+    FROM notification_message_options
+    ON CONFLICT(guild_id, scope, scope_key) DO NOTHING;
+
+    INSERT INTO notification_configs (
+      guild_id, scope, scope_key, custom_message
+    )
+    SELECT guild_id, 'creator', 'youtube:' || channel_id, custom_message
+    FROM guild_youtube_subs
+    WHERE custom_message IS NOT NULL
+    ON CONFLICT(guild_id, scope, scope_key) DO UPDATE SET
+      custom_message = excluded.custom_message;
+
+    INSERT INTO notification_configs (
+      guild_id, scope, scope_key, custom_message
+    )
+    SELECT guild_id, 'creator', 'twitch:' || channel_id, custom_message
+    FROM guild_twitch_subs
+    WHERE custom_message IS NOT NULL
+    ON CONFLICT(guild_id, scope, scope_key) DO UPDATE SET
+      custom_message = excluded.custom_message;
+
+    INSERT INTO notification_configs (
+      guild_id, scope, scope_key, custom_message
+    )
+    SELECT guild_id, 'creator', 'kick:' || channel_id, custom_message
+    FROM guild_kick_subs
+    WHERE custom_message IS NOT NULL
+    ON CONFLICT(guild_id, scope, scope_key) DO UPDATE SET
+      custom_message = excluded.custom_message;
+  `);
 
 const guildSettingsColumns = db.prepare("PRAGMA table_info(guild_settings)").all().map(column => column.name);
 if (!guildSettingsColumns.includes("updates_channel_id")) {
   db.exec("ALTER TABLE guild_settings ADD COLUMN updates_channel_id TEXT");
   db.exec("UPDATE guild_settings SET updates_channel_id = COALESCE(announcement_channel_id, status_channel_id, logs_channel_id)");
   console.log("Added BargazBot Updates channel setting.");
+}
+if (!guildSettingsColumns.includes("notification_dedupe_hours")) {
+  db.exec("ALTER TABLE guild_settings ADD COLUMN notification_dedupe_hours INTEGER NOT NULL DEFAULT 24");
+  console.log("Added notification dedupe window setting.");
+}
+const notificationMessageColumns = db.prepare("PRAGMA table_info(notification_messages)").all().map(column => column.name);
+if (!notificationMessageColumns.includes("creator_channel_id")) {
+  db.exec("ALTER TABLE notification_messages ADD COLUMN creator_channel_id TEXT");
+}
+if (!notificationMessageColumns.includes("content_title")) {
+  db.exec("ALTER TABLE notification_messages ADD COLUMN content_title TEXT");
 }
 const userColumns = db.prepare("PRAGMA table_info(users)").all().map(column => column.name);
 if (!userColumns.includes("paid_until")) {
@@ -241,6 +367,42 @@ if (!profileColumns.includes("can_delete_data")) {
   return db;
 }
 
+export function getNotificationDedupeHours(guildId) {
+  const row = getDB().prepare(`
+    SELECT notification_dedupe_hours
+    FROM guild_settings
+    WHERE guild_id = ?
+  `).get(guildId);
+
+  return Number.isInteger(row?.notification_dedupe_hours)
+    ? row.notification_dedupe_hours
+    : 24;
+}
+
+export function setNotificationDedupeHours(guildId, hours) {
+  const parsed = Number(hours);
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+
+  const value = Math.min(8760, Math.floor(parsed));
+
+  getDB().prepare(`
+    INSERT INTO guild_settings (
+      guild_id,
+      notification_dedupe_hours,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      notification_dedupe_hours = excluded.notification_dedupe_hours,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(guildId, value);
+
+  return value;
+}
 
 // Note: Adding new columns of data requires a 1-time command in addition to adding to CREATE TABLE
 

@@ -4,7 +4,7 @@ import { PermissionFlagsBits } from "discord.js";
 export const PERMISSION_TYPES =    {USER: "user", ROLE: "role"};
 export const ACCESS_LEVELS =       {FULL: "full", CONFIGURATION: "configuration", CUSTOM: "custom"};
 export const COMMAND_PERMISSIONS = {
-  notification: ["add", "delete", "edit", "message", "channel", "refresh", "list"],
+  notification: ["add", "delete", "edit", "message", "channel", "refresh", "list", "groups"],
   channels: ["set", "list"],
   data: ["server"],
   logging: ["view", "set", "reset"],

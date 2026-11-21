@@ -1,16 +1,17 @@
 import * as discord          from "discord.js";
 import * as channelManager   from "./channelManager.js";
-import {createLogger}        from "bargaz/logging.js";
-import {isShutdownRequested} from "bargaz/shutdownCoordinator.js";
-import {trackBotCallback}    from "./lifecycle.js";
-import {getDB, closeDB, initDB}         from "./storage.js";
-import {DB_BACKUP_DIR, DB_DIR, DB_PATH} from "./config.js";
 import * as permissions      from "./permissions.js";
 import * as notifications    from "./notifications.js";
 import * as entitlements     from "./entitlements.js";
 import fs                    from "node:fs";
 import path                  from "node:path";
 import Database              from "better-sqlite3";
+import {createLogger}        from "bargaz/logging.js";
+import {isShutdownRequested} from "bargaz/shutdownCoordinator.js";
+import {trackBotCallback}    from "./lifecycle.js";
+import {getDB, closeDB, initDB, getNotificationDedupeHours, setNotificationDedupeHours} from "./storage.js";
+import {menuId, menuOption, buildSelectRow, buildButtonRow, buildMentionableRow, parseMenuId} from "./utils.js";
+import {DB_BACKUP_DIR, DB_DIR, DB_PATH}                                                 from "./config.js";
 
 const logging = createLogger({
   EmbedBuilder: discord.EmbedBuilder,
@@ -19,6 +20,7 @@ const logging = createLogger({
 });
 
 const commandCollectors = new Set();
+const NOTIFICATION_GROUP_KINDS = ["live", "scheduled", "video", "short", "premiere", "post", "content"];
 
 function createCommandCollector(message, options) {
   const collector = message.createMessageComponentCollector(options);
@@ -99,142 +101,8 @@ const commands = [
   //===================================================
   new discord.SlashCommandBuilder()
     .setName("notification")
-    .setDescription("Manage creator notifications.")
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName("add")
-        .setDescription("Add a creator notification.")
-        .addStringOption(option =>
-          addPlatformChoices(option
-            .setName("platform")
-            .setDescription("The creator's platform.")
-            .setRequired(true)
-          )
-        )
-        .addStringOption(option => option
-          .setName("creator")
-          .setDescription("The creator's channel URL, handle, or username.")
-          .setRequired(true)
-        )
-        .addStringOption(option => option
-          .setName("nickname")
-          .setDescription("A nickname used to manage this notification.")
-          .setRequired(true)
-        )
-        .addChannelOption(option => option
-          .setName("channel")
-          .setDescription("The Discord channel where notifications will be sent.")
-          .setRequired(false)
-          .addChannelTypes(discord.ChannelType.GuildText, discord.ChannelType.GuildAnnouncement)
-        )
-        .addStringOption(option => option
-          .setName("message")
-          .setDescription("Optional custom message sent with this creator's notifications.")
-          .setRequired(false)
-          .setMaxLength(2000)
-        )
-    )
-    .addSubcommand(subcommand => subcommand
-      .setName("delete")
-      .setDescription("Delete a creator notification.")
-      .addStringOption(option =>
-        addPlatformChoices(option
-          .setName("platform")
-          .setDescription("The notification's platform.")
-          .setRequired(true)
-        )
-      )
-      .addStringOption(option => option
-        .setName("nickname")
-        .setDescription("The notification nickname.")
-        .setRequired(true)
-      )
-    )
-    .addSubcommand(subcommand => subcommand
-      .setName("edit")
-      .setDescription("Rename a creator notification.")
-      .addStringOption(option =>
-        addPlatformChoices(option
-          .setName("platform")
-          .setDescription("The notification's platform.")
-          .setRequired(true)
-        )
-      )
-      .addStringOption(option => option
-        .setName("nickname")
-        .setDescription("The notification's current nickname.")
-        .setRequired(true)
-      )
-      .addStringOption(option => option
-        .setName("new-nickname")
-        .setDescription("The new nickname.")
-        .setRequired(true)
-      )
-    )
-    .addSubcommand(subcommand => subcommand
-      .setName("message")
-      .setDescription("Configure a creator's notification message.")
-      .addStringOption(option => addPlatformChoices(option
-        .setName("platform")
-        .setDescription("The notification's platform.")
-        .setRequired(true)
-      ))
-      .addStringOption(option => option
-        .setName("nickname")
-        .setDescription("The notification nickname.")
-        .setRequired(true)
-      )
-      .addStringOption(option => option
-        .setName("message")
-        .setDescription("Custom message, or leave blank to restore the default.")
-        .setRequired(false)
-        .setMaxLength(2000)
-      )
-    )
-    .addSubcommand(subcommand => subcommand
-      .setName("channel")
-      .setDescription("Change a creator notification's destination channel.")
-      .addStringOption(option => addPlatformChoices(option
-        .setName("platform")
-        .setDescription("The notification's platform.")
-        .setRequired(true)
-      ))
-      .addStringOption(option => option
-        .setName("nickname")
-        .setDescription("The notification nickname.")
-        .setRequired(true)
-      )
-      .addChannelOption(option =>option
-        .setName("channel")
-        .setDescription("The Discord channel where notifications will be sent.")
-        .setRequired(true)
-        .addChannelTypes(discord.ChannelType.GuildText, discord.ChannelType.GuildAnnouncement)
-      )
-    )
-    .addSubcommand(subcommand => subcommand
-      .setName("refresh")
-      .setDescription("Refresh information for a creator notification.")
-      .addStringOption(option => addPlatformChoices(option
-        .setName("platform")
-        .setDescription("The notification's platform.")
-        .setRequired(true)
-      ))
-      .addStringOption(option => option
-        .setName("nickname")
-        .setDescription("The notification nickname.")
-        .setRequired(true)
-      )
-    )
-    .addSubcommand(subcommand => subcommand
-      .setName("list")
-      .setDescription("List this server's creator notifications.")
-      .addStringOption(option => addPlatformChoices(option
-        .setName("platform")
-        .setDescription("Only show notifications from one platform.")
-        .setRequired(false)
-      ))
-    ),
-  
+    .setDescription("Manage creator notifications from a menu."),
+
   //===================================================
   // Channel Configuration
   //===================================================
@@ -1867,208 +1735,1376 @@ async function handlePermissionList(interaction) {
   collector.on("end", async () => {await interaction.editReply({components: []}).catch(() => {});});
 }
 
-// Routes notification commands after checking individual access
+// Routes /notification through an interactive menu
 // interaction = ChatInputCommandInteraction
 async function handleNotification(interaction) {
-  const subcommand = interaction.options.getSubcommand();
-  if (!await requireCommandAccess(interaction, "notification", subcommand)) {return;}
-  switch (subcommand) {
-    case "add":     await handleNotificationAdd(interaction); break;
-    case "delete":  await handleNotificationDelete(interaction); break;
-    case "edit":    await handleNotificationEdit(interaction); break;
-    case "message": await handleNotificationMessage(interaction); break;
-    case "channel": await handleNotificationChannel(interaction); break;
-    case "refresh": await handleNotificationRefresh(interaction); break;
-    case "list":    await handleNotificationList(interaction); break;
+  if (!interaction.guild) {
+    await interaction.reply({content:"This command can only be used in a Discord server.", flags:discord.MessageFlags.Ephemeral});
+    return;
   }
-}
 
-// Adds a creator notification subscription to the server
-// interaction = ChatInputCommandInteraction
-async function handleNotificationAdd(interaction) {
+  const member = interaction.member?.roles?.cache
+    ? interaction.member
+    : await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+
+  if (!permissions.canUseCommand(member, "notification")) {
+    await interaction.reply({content:"You do not have permission to use `/notification` in this server.", flags:discord.MessageFlags.Ephemeral});
+    return;
+  }
+
+  const state = {
+    page:        "home",
+    groups:       [],
+    group:        null,
+    groupOptions: null,
+    pendingCreate: null,
+    pendingChannel: null,
+    conflictGroup: null,
+    conflictingChannelId: null,
+    status:      null,
+    action:      null,
+    list:        [],
+    selection:   null,
+    backPage:    "home",
+    pendingAdd:  {},
+    configTargets: [],
+    configValues:  [],
+    canUse:      action => permissions.canUseCommand(member, "notification", action)
+  };
+
   await interaction.deferReply({flags:discord.MessageFlags.Ephemeral});
-  const platform            = interaction.options.getString("platform", true);
-  const creator             = interaction.options.getString("creator", true);
-  const nickname            = interaction.options.getString("nickname", true).trim();
-  const notificationChannel = interaction.options.getChannel("channel");
-  const customMessage       = interaction.options.getString("message");
-  if (!nickname) {await interaction.editReply({content:"The notification nickname cannot be empty."}); return;}
-  if (notifications.findGuildSubscription(interaction.guild.id, nickname, platform)) {
-    await interaction.editReply({content:`A ${notifications.getPlatformName(platform)} notification already uses the nickname **${nickname}**.`}); return;
-  }
-  const result = await notifications.addSubscription(interaction.guild.id, platform, creator, nickname, notificationChannel ?.id ?? null, customMessage ?? null);
-  if (!result.success) {if (result.reason === "already-exists") {await interaction.editReply({content:"This server is already following that creator on this platform."}); return;}
-  if (result.reason === "entitlement-limit") {await interaction.editReply({content:
-    `This server has used all of its ` +
-    `${notifications.getPlatformName(platform)} creator notification limit ` +
-    `(**${result.usage}/${result.limit}**). ` +
-    `Use \`/entitlement allocate\` to add more capacity to this server.`
-  }); return;}
-  await interaction.editReply({content:`BargazBot could not find that ${notifications.getPlatformName(platform)} channel.`}); return;}
-  const destination = notificationChannel ? `${notificationChannel}` : "the server's BargazBot notification channel";
-  await interaction.editReply({
-    content:
-      `Added **${result.channel.channel_name}** on ` +
-      `**${notifications.getPlatformName(platform)}** ` +
-      `with the nickname **${nickname}**.\n` +
-      `Destination: ${destination}\n` +
-      `Message: ${customMessage ? "Custom" : "BargazBot default"}`
+  const reply = await interaction.editReply(renderNotificationMenu(interaction, state));
+
+  const collector = createCommandCollector(reply, {
+    filter: item =>
+      item.user.id === interaction.user.id &&
+      item.customId.startsWith("notification:"),
+    time: 10 * 60 * 1000
   });
-}
 
-// Deletes a creator notification subscription from the server
-// interaction = ChatInputCommandInteraction
-async function handleNotificationDelete(interaction) {
-  const platform = interaction.options.getString("platform", true);
-  const nickname = interaction.options.getString("nickname", true);
-  const result   = notifications.deleteSubscription(interaction.guild.id, nickname, platform);
-  if (!result.success) {
-    await interaction.reply({content:`No ${notifications.getPlatformName(platform)} creator notification was found with the nickname **${nickname}**.`, 
-    flags:discord.MessageFlags.Ephemeral
-    }); return;
-  }
-  await interaction.reply({
-    content:
-      `Deleted the **${result.subscription.nickname}** ` +
-      `${notifications.getPlatformName(result.subscription.platform)} notification.`,
-    flags:discord.MessageFlags.Ephemeral
+  collector.on("end", async () => {
+    await interaction.editReply({content:"Notification menu closed.", embeds:[], components:[]}).catch(() => {});
   });
-}
 
-// Changes the nickname of an existing creator notification
-// interaction = ChatInputCommandInteraction
-async function handleNotificationEdit(interaction) {
-  const platform    = interaction.options.getString("platform", true);
-  const nickname    = interaction.options.getString("nickname", true);
-  const newNickname = interaction.options.getString("new-nickname", true).trim();
-  if (!newNickname) {await interaction.reply({content:"The new nickname cannot be empty.", flags:discord.MessageFlags.Ephemeral}); return;}
-  const current = notifications.findGuildSubscription(interaction.guild.id, nickname, platform);
-  if (!current) {
-    await interaction.reply({
-      content:`No ${notifications.getPlatformName(platform)} notification was found with the nickname **${nickname}**.`,
-      flags:discord.MessageFlags.Ephemeral
-    }); return;
-  }
-  const duplicate = notifications.findGuildSubscription(interaction.guild.id, newNickname, platform);
-  if (duplicate && duplicate.channelId !== current.channelId) {
-    await interaction.reply({
-      content:`A ${notifications.getPlatformName(platform)} notification already uses the nickname **${newNickname}**.`,
-      flags:discord.MessageFlags.Ephemeral
-    }); return;
-  }
-  const result = notifications.editSubscription(interaction.guild.id, nickname, platform, newNickname);
-  if (!result.success) {
-    await interaction.reply({content:result.reason === "nickname-exists"
-      ? `A ${notifications.getPlatformName(platform)} notification already uses the nickname **${newNickname}**.`
-      : `No ${notifications.getPlatformName(platform)} notification was found with the nickname **${nickname}**.`,
-      flags:discord.MessageFlags.Ephemeral
-    }); return;
-  }
-  await interaction.reply({content:`Changed the notification nickname from **${nickname}** to **${newNickname}**.`, flags:discord.MessageFlags.Ephemeral
-  });
-}
-
-// Updates or resets a creator notification's custom message
-// interaction = ChatInputCommandInteraction
-async function handleNotificationMessage(interaction) {
-  const platform      = interaction.options.getString("platform", true);
-  const nickname      = interaction.options.getString("nickname", true);
-  const customMessage = interaction.options.getString("message", false);
-  const result        = notifications.setSubscriptionMessage(interaction.guild.id, nickname, platform, customMessage);
-  if (!result.success) {await interaction.reply({
-    content:`No ${notifications.getPlatformName(platform)} notification was found with the nickname **${nickname}**.`,
-    flags:discord.MessageFlags.Ephemeral
-  }); return;}
-  await interaction.reply({content:customMessage === null
-    ? `Restored **${nickname}** to BargazBot's default notification message.`
-    : `Updated the custom notification message for **${nickname}**.`,
-    flags:discord.MessageFlags.Ephemeral
-  });
-}
-
-// Changes the destination channel for a creator notification
-// interaction = ChatInputCommandInteraction
-async function handleNotificationChannel(interaction) {
-  const platform = interaction.options.getString("platform", true);
-  const nickname = interaction.options.getString("nickname", true);
-  const channel  = interaction.options.getChannel("channel", true);
-  const result   = notifications.setSubscriptionChannel(interaction.guild.id, nickname, platform, channel.id);
-  if (!result.success) {await interaction.reply({
-    content:`No ${notifications.getPlatformName(platform)} notification was found with the nickname **${nickname}**.`,
-    flags:  discord.MessageFlags.Ephemeral
-  }); return;}          await interaction.reply({
-    content:`Creator notifications for **${nickname}** will now be sent to ${channel}.`,
-    flags:  discord.MessageFlags.Ephemeral
-  });
-}
-
-// Requests a refresh of an existing creator notification
-// interaction = ChatInputCommandInteraction
-
-async function handleNotificationRefresh(interaction) {
-  const platform = interaction.options.getString("platform",true);
-  const nickname = interaction.options.getString("nickname",true);
-  const platformName = notifications.getPlatformName(platform);
-  await interaction.deferReply({flags:discord.MessageFlags.Ephemeral});
-  try {
-    const result = await notifications.refreshSubscription(interaction.client,interaction.guild.id,nickname,platform);
-    if (!result.success) { let message;
-      switch (result.reason) {
-        case "not-found":                                                         message = `No ${platformName} notification was found with the nickname **${nickname}**.`; break;
-        case "refresh-limit": { const retryAt = Math.ceil(result.retryAt / 1000); message = `You've reached the refresh limit for **${platformName}** (2 successful refreshes per 6 hours).\nYou can refresh again <t:${retryAt}:R>.`; break;}
-        case "no-content":                                                        message = `No current content was found for **${nickname}** on ${platformName}. Your refresh allowance was not used.`; break;
-        case "guild-unavailable":                                                 message = "BargazBot couldn't access this Discord server. Your refresh allowance was not used."; break;
-        case "channel-unavailable":                                               message = "BargazBot couldn't access a notification channel to post the announcement. Your refresh allowance was not used."; break;
-        case "refresh-error":                                                     message = `An error occurred while refreshing **${nickname}** on ${platformName}. Please try again later.`; break;
-        default:                                                                  message = `Unable to refresh **${nickname}** on ${platformName}.`;
-      }
-      await interaction.editReply({content:message}); return;
-    }
-    const content = result.content;
-    const remaining = result.remaining;
-    const contentName = content.title || "Untitled content";
-    await interaction.editReply({
-      content:
-        `Successfully refreshed **${result.subscription.nickname}** on **${platformName}**.\n` +
-        `**Content:** ${contentName}\n` +
-        `**Type:** ${content.contentType || "content"}\n` +
-        `**Remaining refreshes:** ${remaining} of 2 for ${platformName}.\n` +
-        `The notification was posted successfully.`
-    });
-  } catch (error) {console.error("Notification refresh command failed:",error); await interaction.editReply({content:"An unexpected error occurred while processing the refresh command."});}
-}
-
-
-// Displays the server's configured creator notifications
-// interaction = ChatInputCommandInteraction
-async function handleNotificationList(interaction) {
-  const platform      = interaction.options.getString("platform", false);
-  const subscriptions = notifications.getGuildSubscriptions(interaction.guild.id, platform);
-  if (!subscriptions.length) {await interaction.reply({
-    content: platform ? `No ${notifications.getPlatformName(platform)} creator notifications are configured for this server.` : "No creator notifications are configured for this server.",
-    flags:   discord.MessageFlags.Ephemeral
-  }); return;}
-  const lines =
-    subscriptions.map(subscription => {
-        const destination = subscription.discordChannelId ? `<#${subscription.discordChannelId}>` : "Default/fallback channel";
-        const messageMode = subscription.customMessage ? "Custom message" : "Default message";
-        return (
-          `**${subscription.nickname}** — ` + `${notifications.getPlatformName(subscription.platform)}\n` +
-          `${subscription.channelName}\n`   + `Destination: ${destination} • ${messageMode}`
-        );
-      }
-    );
-  const chunks = []; let current = "";
-  for (const line of lines) {
-    const safeLine = line.slice(0,3900);
-    const candidate = current ? `${current}\n\n${safeLine}` : safeLine;
-    if (candidate.length > 3900) {if (current) {chunks.push(current);} current = safeLine;} else {current = candidate;}
-  }
-  if (current) {chunks.push(current);}
-  const embeds = chunks.map((description, index) => new discord.EmbedBuilder()
-    .setTitle(index === 0 ? "Creator Notifications" : `Creator Notifications (${index + 1})`)
-    .setDescription(description)
-    .setTimestamp()
+  onCommandComponent(collector, async component =>
+    handleNotificationComponent(component, interaction, state, collector)
   );
-  await interaction.reply({embeds, flags:discord.MessageFlags.Ephemeral});
+}
+
+
+// Builds the destination choices for a notification
+function notificationChannelOptions(guild) {
+  const channels = [...guild.channels.cache.values()]
+    .filter(channel =>
+      channel.isTextBased() &&
+      !channel.isThread() &&
+      [discord.ChannelType.GuildText, discord.ChannelType.GuildAnnouncement].includes(channel.type)
+    )
+    .slice(0, 24)
+    .map(channel => menuOption(
+      channel.name,
+      channel.id,
+      channel.type === discord.ChannelType.GuildAnnouncement ? "Announcement channel" : "Text channel"
+    ));
+
+  return [
+    menuOption("Default BargazBot channel", "default", "Use the server's notification channel"),
+    ...channels
+  ];
+}
+
+
+// Renders the current page of the notification menu
+function renderNotificationMenu(interaction, state) {
+  const hours = getNotificationDedupeHours(interaction.guild.id);
+  const embed = new discord.EmbedBuilder()
+    .setTitle("BargazBot Notifications")
+    .setColor(0x5865F2)
+    .setTimestamp();
+
+  let rows = [];
+
+  switch (state.page) {
+    case "home": {
+      const options = [];
+
+      if (state.canUse("add")) {options.push(menuOption("Add a creator", "add", "Follow a new creator"));}
+      if (state.canUse("message")) {options.push(menuOption("Message configs", "configs", "Default, platform, creator, or group messages"));}
+      if (state.canUse("edit") || state.canUse("message") || state.canUse("channel") || state.canUse("delete")) {
+        options.push(menuOption("Manage a creator", "edit", "Rename, message, channel, refresh, delete"));
+      }
+      if (state.canUse("refresh")) {options.push(menuOption("Refresh now", "refresh", "Post current content now"));}
+      options.push(menuOption("View all", "list", "List configured notifications"));
+      options.push(menuOption("Dedupe window", "dedupe", `Currently ${hours} hour(s) — 0 always posts a new message`));
+      if (state.canUse("groups")) {
+        options.push(menuOption("Announcement groups", "groups", "Combine creators into one announcement"));
+      }
+      embed.setDescription((state.status ? `${state.status}\n\n` : "") + "Choose an action below.");
+      rows = [
+        buildSelectRow(menuId("notification", "home"), options, {placeholder:"Choose an action"}),
+        buildButtonRow([{customId:menuId("notification","close"),label:"Close",style:"secondary"}])
+      ];
+      break;
+    }
+
+    case "pick": {
+      embed.setDescription("Choose a creator notification:");
+      rows = [
+        buildSelectRow(menuId("notification", "pick"), state.list.map((subscription, index) => menuOption(
+          `${subscription.nickname} — ${notifications.getPlatformName(subscription.platform)}`,
+          String(index),
+          subscription.channelName
+        )), {placeholder:"Choose a creator"}),
+        buildButtonRow([{customId:menuId("notification","back"),label:"Back",style:"secondary"}])
+      ];
+      break;
+    }
+
+    case "edit": {
+      const subscription = state.list[state.selection];
+      embed.setDescription(
+        `**${subscription.nickname}** — ${notifications.getPlatformName(subscription.platform)}\n` +
+        subscription.channelName
+      );
+      const editOptions = [
+        menuOption("Rename",  "rename",  "Change the nickname"),
+        menuOption("Message", "message", "Change the custom message")
+      ];
+
+      if (state.canUse("message")) {
+        editOptions.push(menuOption("Message options", "options", "Mentions and creator name on edit"));
+      }
+
+      editOptions.push(
+        menuOption("Channel", "channel", "Change the destination channel"),
+        menuOption("Refresh", "refresh", "Post current content now"),
+        menuOption("Delete",  "delete",  "Remove this notification"),
+        menuOption("Back",    "back",    "Choose another creatoFr")
+      );
+
+      rows = [
+        buildSelectRow(menuId("notification", "edit"), editOptions, {placeholder:"Choose an edit"}),
+        buildButtonRow([{customId:menuId("notification","back"),label:"Back",style:"secondary"}])
+      ];
+      break;
+    }
+
+    case "message-options": {
+      const subscription = state.list[state.selection];
+      const options = state.options ?? notifications.getNotificationMessageOptions(
+        guild.id,
+        subscription.platform,
+        subscription.channelId
+      );
+
+      embed.setDescription(
+        `Message options for **${subscription.nickname}**\n\n` +
+        `Roles mentioned: ${options.mentionRoles.length}\n` +
+        `Users mentioned: ${options.mentionUsers.length}\n` +
+        `Creator name on edit: ${options.showCreatorOnEdit ? "On" : "Off"}\n\n` +
+        `Placeholders: \`{creator}\`, \`{platform}\`, \`{title}\``
+      );
+
+      rows = [
+        buildMentionableRow(menuId("notification","message-options","roles"), {placeholder:"Choose roles to mention", maxValues:5}),
+        buildMentionableRow(menuId("notification","message-options","users"), {placeholder:"Choose users to mention", maxValues:5}),
+        buildButtonRow([
+          {
+            customId: menuId("notification","message-options","toggle"),
+            label: `Creator name on edit: ${options.showCreatorOnEdit ? "On" : "Off"}`,
+            style: "secondary"
+          },
+          {customId:menuId("notification","back"),label:"Back",style:"secondary"}
+        ])
+      ];
+      break;
+    }
+
+    case "groups": {
+      embed.setTitle("Announcement Groups");
+      embed.setDescription((state.status ? `${state.status}\n\n` : "") +
+        "Choose a group, or create a new one. Every group needs a channel.");
+      rows = [
+        buildSelectRow(menuId("notification","groups"), state.groups.map((group, index) => menuOption(
+          group.name,
+          String(index),
+          `${notifications.getGroupMembers(interaction.guild.id, group.groupId).length} creator(s) • ${group.windowMinutes} min`
+        )), {placeholder:"Choose a group"}),
+        buildButtonRow([
+          {customId:menuId("notification","groups","create"),label:"Create group",style:"success"},
+          {customId:menuId("notification","groups","back"),label:"Back",style:"secondary"}
+        ])
+      ];
+      break;
+    }
+
+    case "group-create-channel": {
+      embed.setTitle("Create a group");
+      embed.setDescription("Pick where this group's combined announcements go. The server default is allowed.");
+      rows = [
+        buildSelectRow(menuId("notification","group-create-channel"), notificationChannelOptions(interaction.guild), {placeholder:"Choose a channel"}),
+        buildButtonRow([{customId:menuId("notification","group-create-channel","back"),label:"Cancel",style:"secondary"}])
+      ];
+      break;
+    }
+
+    case "group-conflict": {
+      embed.setTitle("Channel already in use");
+      embed.setDescription(
+        `**${state.conflictGroup?.name}** already uses ` +
+        `${state.conflictingChannelId ? `<#${state.conflictingChannelId}>` : "the default notification channel"}.\n\n` +
+        "Move that group first. Your change is held until both groups use different channels."
+      );
+      rows = [buildButtonRow([
+        {customId:menuId("notification","group-conflict","yes"),label:"Move it first",style:"primary"},
+        {customId:menuId("notification","group-conflict","no"),label:"Go back",style:"secondary"}
+      ])];
+      break;
+    }
+
+    case "group": {
+      const group = state.group;
+      const members = notifications.getGroupMembers(interaction.guild.id, group.groupId);
+
+      embed.setTitle(group.name);
+      embed.setDescription(
+        `Channel: ${group.discordChannelId ? `<#${group.discordChannelId}>` : "Default notification channel"}\n` +
+        `Window: ${group.windowMinutes} minute(s)\n` +
+        `Members: ${members.length}\n` +
+        `Kinds: ${group.allowedKinds.length ? group.allowedKinds.join(", ") : "Same kind only"}\n` +
+        `Multiple posts per channel: ${group.allowMultiplePerChannel ? "On" : "Off"}\n` +
+        `Title: ${group.title ?? "Default"}\n` +
+        `Details: ${group.details ?? "Default"}\n` +
+        `Thumbnail: ${group.thumbnailUrl ?? "Default"}\n` +
+        `Mentions: ${group.mentionRoles.length} role(s), ${group.mentionUsers.length} user(s)\n\n` +
+        `Placeholders: \`{creators}\`, \`{count}\`, \`{titles}\``
+      );
+
+      rows = [
+        buildSelectRow(menuId("notification","group"), [
+          menuOption("Rename group",       "name",      "Change the group name"),
+          menuOption("Announcement title", "title",     "Custom embed title"),
+          menuOption("Announcement details","details",  "Custom embed description"),
+          menuOption("Thumbnail",          "thumbnail", "Custom thumbnail URL"),
+          menuOption("Match window",       "window",    "Minutes to combine creators"),
+          menuOption("Destination channel","channel",   "Where combined posts go"),
+          menuOption("Allowed content kinds","types",   "Kinds that may combine"),
+          menuOption("Multiple posts",     "multi",     "One channel adding several posts"),
+          menuOption("Mentions",           "mentions",  "Roles and users to mention"),
+          menuOption("Members",            "members",   "Creators in this group"),
+          menuOption("Delete group",       "delete",    "Remove this group"),
+          menuOption("Back",               "back",      "All groups")
+        ], {placeholder:"Group settings"}),
+        buildButtonRow([{customId:menuId("notification","group","back"),label:"Back",style:"secondary"}])
+      ];
+      break;
+    }
+
+    case "group-types": {
+      const group = state.groupOptions ?? state.group;
+      embed.setTitle("Content kinds");
+      embed.setDescription("Select the kinds allowed to combine. Select none to only combine identical kinds.");
+      rows = [
+        buildSelectRow(menuId("notification","group","types"), NOTIFICATION_GROUP_KINDS.map(kind =>
+          menuOption(kind, kind, "", group.allowedKinds.includes(kind))
+        ), {placeholder:"Choose kinds", minValues:0, maxValues:NOTIFICATION_GROUP_KINDS.length}),
+        buildButtonRow([{customId:menuId("notification","group","types","back"),label:"Back",style:"secondary"}])
+      ];
+      break;
+    }
+
+    case "group-channel": {
+      embed.setTitle("Group destination channel");
+      embed.setDescription("Group settings win over each member's channel for the combined message.");
+      rows = [
+        buildSelectRow(menuId("notification","group","channel"), notificationChannelOptions(interaction.guild), {placeholder:"Choose a channel"}),
+        buildButtonRow([{customId:menuId("notification","group","channel","back"),label:"Back",style:"secondary"}])
+      ];
+      break;
+    }
+
+    case "group-mentions": {
+      const options = state.groupOptions ?? state.group;
+      embed.setTitle("Group mentions");
+      embed.setDescription(
+        `Roles: ${options.mentionRoles.length}\n` +
+        `Users: ${options.mentionUsers.length}\n` +
+        `Creator name on edit: ${options.showCreatorOnEdit ? "On" : "Off"}`
+      );
+      rows = [
+        buildMentionableRow(menuId("notification","group","mentions","roles"), {placeholder:"Roles to mention", maxValues:5}),
+        buildMentionableRow(menuId("notification","group","mentions","users"), {placeholder:"Users to mention", maxValues:5}),
+        buildButtonRow([
+          {
+            customId: menuId("notification","group","mentions","toggle"),
+            label: `Creator name on edit: ${options.showCreatorOnEdit ? "On" : "Off"}`,
+            style: "secondary"
+          },
+          {customId:menuId("notification","group","mentions","back"),label:"Back",style:"secondary"}
+        ])
+      ];
+      break;
+    }
+
+    case "group-members": {
+      const selected = new Set(
+        notifications.getGroupMembers(interaction.guild.id, state.group.groupId)
+          .map(member => `${member.platform}:${member.channelId}`)
+      );
+
+      const options = notifications.getGuildSubscriptions(interaction.guild.id)
+        .slice(0, 25)
+        .map(subscription => menuOption(
+          `${subscription.nickname} — ${notifications.getPlatformName(subscription.platform)}`,
+          `${subscription.platform}:${subscription.channelId}`,
+          subscription.channelName,
+          selected.has(`${subscription.platform}:${subscription.channelId}`)
+        ));
+
+      embed.setTitle("Group members");
+      embed.setDescription("Only creators that actually post appear in the combined message.");
+
+      rows = options.length
+        ? [
+            buildSelectRow(menuId("notification","group","members"), options, {placeholder:"Choose creators", minValues:0, maxValues:Math.min(options.length,25)}),
+            buildButtonRow([{customId:menuId("notification","group","members","back"),label:"Back",style:"secondary"}])
+          ]
+        : [buildButtonRow([{customId:menuId("notification","group","members","back"),label:"Back",style:"secondary"}])];
+      break;
+    }
+
+    case "group-delete": {
+      embed.setTitle("Delete group");
+      embed.setDescription(`Delete **${state.group.name}**? Creator notifications are not deleted.`);
+      rows = [buildButtonRow([
+        {customId:menuId("notification","group","delete","yes"),label:"Delete",style:"danger"},
+        {customId:menuId("notification","group","delete","cancel"),label:"Cancel",style:"secondary"}
+      ])];
+      break;
+    }
+
+    case "config-list": {
+      const targets = notifications.listNotificationConfigTargets(interaction.guild.id);
+
+      embed.setTitle("Message configs");
+      embed.setDescription((state.status ? `${state.status}\n\n` : "") +
+        "Select one config to edit, or select several to edit them together. " +
+        "A config you have not customized inherits its settings.");
+
+      rows = [
+        buildSelectRow(menuId("notification","config-list"), targets.map(target => menuOption(
+          target.label,
+          target.value,
+          target.config ? "Customized" : "Inherited",
+          (state.configTargets ?? []).includes(target.value)
+        )), {placeholder:"Choose config(s)", minValues:1, maxValues:Math.min(targets.length,25)}),
+        buildButtonRow([{customId:menuId("notification","back"),label:"Back",style:"secondary"}])
+      ];
+      break;
+    }
+
+    case "config-edit": {
+      const targets = state.configTargets ?? [];
+      const values = state.configValues ?? [];
+      const allTargets = notifications.listNotificationConfigTargets(interaction.guild.id);
+      const label = targets.length === 1
+        ? (allTargets.find(target => target.value === targets[0])?.label ?? targets[0])
+        : `${targets.length} configs`;
+
+      embed.setTitle("Edit message config");
+      embed.setDescription(
+        (state.status ? `${state.status}\n\n` : "") +
+        `Editing: **${label}**\n\n` +
+        `Custom message: ${configSummary(values, "customMessage")}\n` +
+        `Roles mentioned: ${configSummary(values, "mentionRoles")}\n` +
+        `Users mentioned: ${configSummary(values, "mentionUsers")}\n` +
+        `Creator name on edit: ${configSummary(values, "showCreatorOnEdit")}\n\n` +
+        `Placeholders: \`{creator}\`, \`{platform}\`, \`{title}\``
+      );
+
+      const deletable = targets.every(value => {
+        const {scope} = parseConfigValue(value);
+        return scope !== "default" && scope !== "group";
+      });
+
+      const options = [
+        menuOption("Custom message", "message", "Text shown with the notification"),
+        menuOption("Creator name on edit", "toggle", "Append who updated the message")
+      ];
+      if (deletable) {options.push(menuOption("Reset to inherited", "delete", "Remove these custom configs"));}
+      options.push(menuOption("Back", "back", "Choose different configs"));
+
+      rows = [
+        buildSelectRow(menuId("notification","config-edit"), options, {placeholder:"Choose a setting"}),
+        buildMentionableRow(menuId("notification","config-edit","roles"), {placeholder:"Roles to mention", maxValues:5}),
+        buildMentionableRow(menuId("notification","config-edit","users"), {placeholder:"Users to mention", maxValues:5})
+      ];
+      break;
+    }
+
+    case "confirm": {
+      const subscription = state.list[state.selection];
+      embed.setDescription(`Delete the **${subscription.nickname}** ${notifications.getPlatformName(subscription.platform)} notification?`);
+      rows = [buildButtonRow([
+        {customId:menuId("notification","confirm","delete"),label:"Delete",style:"danger"},
+        {customId:menuId("notification","confirm","cancel"),label:"Cancel",style:"secondary"}
+      ])];
+      break;
+    }
+
+    case "list": {
+      const lines = state.list.map(subscription =>
+        `**${subscription.nickname}** — ${notifications.getPlatformName(subscription.platform)}\n` +
+        `${subscription.channelName}\n` +
+        `Destination: ${subscription.discordChannelId ? `<#${subscription.discordChannelId}>` : "Default/fallback channel"}`
+      );
+      embed.setDescription((lines.join("\n\n") || "No notifications are configured.").slice(0, 4000));
+      rows = [buildButtonRow([{customId:menuId("notification","back"),label:"Back",style:"secondary"}])];
+      break;
+    }
+
+    case "dedupe": {
+      const choices = [0,1,3,6,12,24,48,168,720].map(value => menuOption(
+        value === 0 ? "Always send a new message" : `${value} hour${value === 1 ? "" : "s"}`,
+        String(value),
+        value === 24 ? "Default" : "",
+        value === hours
+      ));
+      embed.setDescription(
+        "Choose how long a recent notification can be reused for the same stream.\n" +
+        "A matching message is only reused if it is still the most recent message in the channel."
+      );
+      rows = [
+        buildSelectRow(menuId("notification","dedupe"), choices, {placeholder:"Choose a window"}),
+        buildButtonRow([{customId:menuId("notification","back"),label:"Back",style:"secondary"}])
+      ];
+      break;
+    }
+
+    case "add-platform": {
+      embed.setDescription("Choose the creator's platform.");
+      rows = [buildSelectRow(menuId("notification","add","platform"), [
+        menuOption("YouTube","youtube"),
+        menuOption("Twitch","twitch"),
+        menuOption("Kick","kick")
+      ], {placeholder:"Choose a platform"})];
+      break;
+    }
+
+    case "add-channel": {
+      embed.setDescription(`Where should **${state.pendingAdd.nickname}** notifications be sent?`);
+      rows = [buildSelectRow(menuId("notification","add","channel"), notificationChannelOptions(interaction.guild), {placeholder:"Choose a channel"})];
+      break;
+    }
+  }
+
+  return {embeds:[embed], components:rows};
+}
+
+
+// Builds the modal used to add a creator
+function notificationAddModal(platform) {
+  return new discord.ModalBuilder()
+    .setCustomId(menuId("notification","add","form"))
+    .setTitle(`Add ${notifications.getPlatformName(platform)} creator`)
+    .addComponents(
+      new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+        .setCustomId("creator")
+        .setLabel("Creator URL, handle, or username")
+        .setStyle(discord.TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(200)
+      ),
+      new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+        .setCustomId("nickname")
+        .setLabel("Nickname")
+        .setStyle(discord.TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(100)
+      ),
+      new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+        .setCustomId("message")
+        .setLabel("Custom message (optional)")
+        .setStyle(discord.TextInputStyle.Paragraph)
+        .setRequired(false)
+        .setMaxLength(2000)
+      )
+    );
+}
+
+
+// Builds the modal used to rename a creator
+function notificationRenameModal(nickname) {
+  return new discord.ModalBuilder()
+    .setCustomId(menuId("notification","rename","form"))
+    .setTitle("Rename notification")
+    .addComponents(
+      new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+        .setCustomId("nickname")
+        .setLabel("New nickname")
+        .setStyle(discord.TextInputStyle.Short)
+        .setValue(nickname)
+        .setRequired(true)
+        .setMaxLength(100)
+      )
+    );
+}
+
+
+// Builds the modal used to edit a custom message
+function notificationMessageModal(nickname, current) {
+  return new discord.ModalBuilder()
+    .setCustomId(menuId("notification","message","form"))
+    .setTitle(`Message for ${nickname}`)
+    .addComponents(
+      new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+        .setCustomId("message")
+        .setLabel("Custom message (blank restores the default)")
+        .setStyle(discord.TextInputStyle.Paragraph)
+        .setValue(current ?? "")
+        .setRequired(false)
+        .setMaxLength(2000)
+      )
+    );
+}
+
+function parseConfigValue(value) {
+  const separator = String(value).indexOf(":");
+  if (separator < 0) {return {scope:"default", scopeKey:""};}
+  return {
+    scope:String(value).slice(0, separator),
+    scopeKey:String(value).slice(separator + 1)
+  };
+}
+
+function configSummary(values, key) {
+  if (!values.length) {return "—";}
+  const first = values[0]?.[key];
+  const same = values.every(value => JSON.stringify(value?.[key]) === JSON.stringify(first));
+  if (!same) {return "Mixed";}
+  if (Array.isArray(first)) {return String(first.length);}
+  if (typeof first === "boolean") {return first ? "On" : "Off";}
+  return first || "Default";
+}
+
+function notificationConfigMessageModal(label, current) {
+  return new discord.ModalBuilder()
+    .setCustomId(menuId("notification","config","message"))
+    .setTitle(`Message — ${label}`.slice(0, 45))
+    .addComponents(
+      new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+        .setCustomId("message")
+        .setLabel("Custom message (blank restores default)")
+        .setStyle(discord.TextInputStyle.Paragraph)
+        .setValue(current ?? "")
+        .setRequired(false)
+        .setMaxLength(2000)
+      )
+    );
+}
+
+function notificationGroupFieldModal(field, group) {
+  const fields = {
+    name:      ["Group name",            "Rename group",                        100,  false],
+    title:     ["Announcement title",    "Embed title (supports placeholders)", 200,  true],
+    details:   ["Announcement details",  "Embed description",                   2000, true],
+    thumbnail: ["Thumbnail URL",         "Image URL",                           200,  true],
+    window:    ["Match window (minutes)","1 to 10080",                          10,   false]
+  };
+
+  const [label, placeholder, maxLength, clearable] = fields[field];
+  const current = field === "window"
+    ? String(group.windowMinutes)
+    : (group[field] ?? "");
+
+  return new discord.ModalBuilder()
+    .setCustomId(menuId("notification","group","field",field))
+    .setTitle(`Edit ${label.toLowerCase()}`)
+    .addComponents(
+      new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+        .setCustomId("value")
+        .setLabel(label)
+        .setStyle(field === "details" ? discord.TextInputStyle.Paragraph : discord.TextInputStyle.Short)
+        .setPlaceholder(placeholder)
+        .setValue(current)
+        .setRequired(!clearable)
+        .setMaxLength(maxLength)
+      )
+    );
+}
+
+function applyHeldGroupChange(guild, state, updatedGroup) {
+  if (
+    state.pendingChannel &&
+    state.pendingChannel.groupId !== updatedGroup.groupId
+  ) {
+    const {groupId, channelId} = state.pendingChannel;
+
+    if (!notifications.findGroupByChannel(guild.id, channelId, groupId)) {
+      notifications.updateGroup(guild.id, groupId, {discordChannelId:channelId});
+      state.pendingChannel = null;
+      return notifications.findGroup(guild.id, groupId);
+    }
+  }
+
+  if (state.pendingCreate) {
+    const {name, channelId} = state.pendingCreate;
+
+    if (!notifications.findGroupByChannel(guild.id, channelId, null)) {
+      const created = notifications.createGroup(guild.id, name, channelId);
+      state.pendingCreate = null;
+      return created;
+    }
+  }
+
+  return null;
+}
+
+// Shows a modal and waits for its submission
+async function showNotificationModal(component, modal, customId) {
+  const submitted = component.awaitModalSubmit({
+    filter: item => item.customId === customId && item.user.id === component.user.id,
+    time: 5 * 60 * 1000
+  }).catch(() => null);
+
+  await component.showModal(modal);
+  return submitted;
+}
+
+
+// Refreshes the selected creator from inside the menu
+async function refreshNotificationFromMenu(component, interaction, state) {
+  const subscription = state.list[state.selection];
+
+  await component.deferUpdate().catch(() => {});
+
+  const result = await notifications.refreshSubscription(
+    interaction.client,
+    interaction.guild.id,
+    subscription.nickname,
+    subscription.platform
+  );
+
+  state.status = result.success
+    ? `Refreshed **${subscription.nickname}** — ${result.content?.title ?? "current content"}.`
+    : `Refresh failed: ${result.reason}. Your allowance was not used.`;
+
+  state.page = "home";
+
+  await interaction.editReply(renderNotificationMenu(interaction, state)).catch(() => {});
+}
+
+
+// Handles one interaction from the notification menu
+async function handleNotificationComponent(component, interaction, state, collector) {
+  const parts = parseMenuId(component.customId);
+  const page  = parts[1];
+  const guild = interaction.guild;
+  const refresh = () => component.update(renderNotificationMenu(interaction, state));
+
+  if (page === "close") {
+    await component.update({content:"Notification menu closed.", embeds:[], components:[]});
+    collector.stop("done");
+    return;
+  }
+
+  if (page === "back") {
+    state.page = state.backPage;
+    state.status = null;
+    await refresh();
+    return;
+  }
+
+  if (page === "home") {
+    const choice = component.values?.[0];
+    state.status = null;
+
+    if (choice === "configs" && state.canUse("message")) {
+      state.backPage = "home";
+      state.configTargets = [];
+      state.configValues = [];
+      state.status = null;
+      state.page = "config-list";
+      await refresh();
+      return;
+    }
+
+    if (choice === "add") {
+      state.page = "add-platform";
+    } else if (choice === "list") {
+      state.list = notifications.getGuildSubscriptions(guild.id);
+      state.page = "list";
+    } else if (choice === "dedupe") {
+      state.page = "dedupe";
+    } else if (choice === "groups" && state.canUse("groups")) {
+      state.groups = notifications.getGuildGroups(guild.id);
+      state.page = state.groups.length ? "groups" : "home";
+      if (!state.groups.length) {state.status = "No announcement groups are configured.";}
+    } else if (["edit","delete","refresh"].includes(choice) && state.canUse(choice)) {
+      state.action = choice;
+      state.list = notifications.getGuildSubscriptions(guild.id);
+      state.backPage = "home";
+      state.page = state.list.length ? "pick" : "home";
+      if (!state.list.length) {state.status = "No creator notifications are configured.";}
+    }
+
+    await refresh();
+    return;
+  }
+
+  if (page === "pick") {
+    state.selection = Number(component.values?.[0] ?? 0);
+    state.backPage = "edit";
+
+    if (state.action === "delete") {
+      state.page = "confirm";
+      await refresh();
+      return;
+    }
+
+    if (state.action === "refresh") {
+      await refreshNotificationFromMenu(component, interaction, state);
+      return;
+    }
+
+    state.page = "edit";
+    await refresh();
+    return;
+  }
+
+  if (page === "edit") {
+    const choice = component.values?.[0];
+    const subscription = state.list[state.selection];
+
+    if (choice === "back") {
+      state.page = "pick";
+      state.backPage = "home";
+      await refresh();
+      return;
+    }
+
+    if (choice === "rename" && state.canUse("edit")) {
+      const customId = menuId("notification","rename","form");
+      const submission = await showNotificationModal(component, notificationRenameModal(subscription.nickname), customId);
+      if (!submission) {return;}
+
+      const newNickname = submission.fields.getTextInputValue("nickname").trim();
+      const result = notifications.editSubscription(guild.id, subscription.nickname, subscription.platform, newNickname);
+      state.status = result.success
+        ? `Renamed the notification to **${newNickname}**.`
+        : `Could not rename: ${result.reason}.`;
+      state.list = notifications.getGuildSubscriptions(guild.id);
+      state.page = "home";
+
+      await submission.reply({content:state.status, flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+      await interaction.editReply(renderNotificationMenu(interaction, state)).catch(() => {});
+      return;
+    }
+
+    if (choice === "message" && state.canUse("message")) {
+      const customId = menuId("notification","message","form");
+      const submission = await showNotificationModal(component, notificationMessageModal(subscription.nickname, subscription.customMessage), customId);
+      if (!submission) {return;}
+
+      const customMessage = submission.fields.getTextInputValue("message").trim() || null;
+      const result = notifications.setSubscriptionMessage(guild.id, subscription.nickname, subscription.platform, customMessage);
+      state.status = result.success
+        ? (customMessage ? `Updated the message for **${subscription.nickname}**.` : `Restored the default message for **${subscription.nickname}**.`)
+        : `Could not update the message: ${result.reason}.`;
+      state.list = notifications.getGuildSubscriptions(guild.id);
+      state.page = "home";
+
+      await submission.reply({content:state.status, flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+      await interaction.editReply(renderNotificationMenu(interaction, state)).catch(() => {});
+      return;
+    }
+
+    if (choice === "options" && state.canUse("message")) {
+      state.options = notifications.getNotificationMessageOptions(
+        guild.id,
+        subscription.platform,
+        subscription.channelId
+      );
+      state.status = null;
+      state.page = "message-options";
+      await refresh();
+      return;
+    }
+
+    if (choice === "channel" && state.canUse("channel")) {
+      state.page = "channel";
+      await refresh();
+      return;
+    }
+
+    if (choice === "refresh" && state.canUse("refresh")) {
+      await refreshNotificationFromMenu(component, interaction, state);
+      return;
+    }
+
+    if (choice === "delete" && state.canUse("delete")) {
+      state.page = "confirm";
+      await refresh();
+      return;
+    }
+
+    await refresh();
+    return;
+  }
+
+  if (page === "message-options") {
+    const subscription = state.list[state.selection];
+    const key = parts[2];
+
+    if (key === "toggle") {
+      state.options = notifications.setNotificationMessageOptions(
+        guild.id,
+        subscription.platform,
+        subscription.channelId,
+        {
+          ...state.options,
+          showCreatorOnEdit: !state.options.showCreatorOnEdit
+        }
+      );
+      state.status = state.options.showCreatorOnEdit
+        ? "The creator name will be shown when a notification is edited."
+        : "The creator name will no longer be shown on edits.";
+      await refresh();
+      return;
+    }
+
+    if (key === "roles" || key === "users") {
+      const ids = (component.values ?? []).slice(0, 5);
+      state.options = notifications.setNotificationMessageOptions(
+        guild.id,
+        subscription.platform,
+        subscription.channelId,
+        {
+          ...state.options,
+          [key === "roles" ? "mentionRoles" : "mentionUsers"]: ids
+        }
+      );
+      state.status = key === "roles"
+        ? `Saved ${ids.length} role mention(s).`
+        : `Saved ${ids.length} user mention(s).`;
+      await refresh();
+      return;
+    }
+
+    await refresh();
+    return;
+  }
+
+  if (page === "config-list") {
+    state.configTargets = component.values ?? [];
+    state.configValues = state.configTargets.map(value => {
+      const {scope, scopeKey} = parseConfigValue(value);
+      return notifications.getNotificationConfig(guild.id, scope, scopeKey) ??
+        notifications.emptyNotificationConfig();
+    });
+    state.status = null;
+    state.page = "config-edit";
+    await refresh();
+    return;
+  }
+
+  if (page === "config-edit") {
+    const targets = state.configTargets ?? [];
+
+    if (parts[2] === "roles" || parts[2] === "users") {
+      const field = parts[2] === "roles" ? "mentionRoles" : "mentionUsers";
+      const ids = (component.values ?? []).slice(0, 5);
+
+      state.configValues = targets.map(value => {
+        const {scope, scopeKey} = parseConfigValue(value);
+        return notifications.setNotificationConfig(guild.id, scope, scopeKey, {[field]:ids});
+      });
+      state.status = parts[2] === "roles"
+        ? `Saved ${ids.length} role mention(s).`
+        : `Saved ${ids.length} user mention(s).`;
+      await refresh();
+      return;
+    }
+
+    const choice = component.values?.[0];
+
+    if (choice === "back") {
+      state.page = "config-list";
+      state.status = null;
+      await refresh();
+      return;
+    }
+
+    if (choice === "message") {
+      const first = state.configValues[0] ?? notifications.emptyNotificationConfig();
+      const customId = menuId("notification","config","message");
+      const submission = await showNotificationModal(
+        component,
+        notificationConfigMessageModal(`${targets.length} config(s)`, first.customMessage),
+        customId
+      );
+      if (!submission) {return;}
+
+      const customMessage = submission.fields.getTextInputValue("message").trim() || null;
+
+      state.configValues = targets.map(value => {
+        const {scope, scopeKey} = parseConfigValue(value);
+        return notifications.setNotificationConfig(guild.id, scope, scopeKey, {customMessage});
+      });
+      state.status = customMessage ? "Custom message saved." : "Custom messages cleared.";
+
+      await submission.reply({content:state.status, flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+      await interaction.editReply(renderNotificationMenu(interaction, state)).catch(() => {});
+      return;
+    }
+
+    if (choice === "toggle") {
+      const first = state.configValues[0] ?? notifications.emptyNotificationConfig();
+      const showCreatorOnEdit = !first.showCreatorOnEdit;
+
+      state.configValues = targets.map(value => {
+        const {scope, scopeKey} = parseConfigValue(value);
+        return notifications.setNotificationConfig(guild.id, scope, scopeKey, {showCreatorOnEdit});
+      });
+      state.status = showCreatorOnEdit
+        ? "Creator name on edit is on."
+        : "Creator name on edit is off.";
+      await refresh();
+      return;
+    }
+
+    if (choice === "delete") {
+      let removed = 0;
+
+      for (const value of targets) {
+        const {scope, scopeKey} = parseConfigValue(value);
+        if (notifications.deleteNotificationConfig(guild.id, scope, scopeKey)) {removed++;}
+      }
+
+      state.configTargets = [];
+      state.configValues = [];
+      state.status = `Reset ${removed} config(s) to inherited settings.`;
+      state.page = "config-list";
+      await refresh();
+      return;
+    }
+
+    await refresh();
+    return;
+  }
+
+  if (page === "groups") {
+    if (parts[2] === "back") {
+      state.page = "home";
+      state.status = null;
+      await refresh();
+      return;
+    }
+
+    if (parts[2] === "create") {
+      state.pendingCreate = {name:"New group", channelId:null};
+      state.pendingChannel = null;
+      state.group = null;
+      state.page = "group-create-channel";
+      state.status = null;
+      await refresh();
+      return;
+    }
+
+    const index = Number(component.values?.[0]);
+    if (Number.isInteger(index) && state.groups[index]) {
+      state.group = state.groups[index];
+      state.groupOptions = state.group;
+      state.pendingCreate = null;
+      state.pendingChannel = null;
+      state.status = null;
+      state.page = "group";
+    }
+
+    await refresh();
+    return;
+  }
+
+  if (page === "group-create-channel" || page === "group-channel") {
+    if (parts[2] === "back" || parts[3] === "back") {
+      state.page = page === "group-create-channel" ? "groups" : "group";
+      await refresh();
+      return;
+    }
+
+    const raw = component.values?.[0];
+    const channelId = raw === "default" ? null : raw;
+    const targetGroupId = page === "group-channel" ? state.group.groupId : null;
+    const conflict = notifications.findGroupByChannel(guild.id, channelId, targetGroupId);
+
+    if (conflict) {
+      state.conflictGroup = conflict;
+      state.conflictingChannelId = channelId;
+
+      if (page === "group-create-channel") {
+        state.pendingCreate = {
+          name: state.pendingCreate?.name ?? "New group",
+          channelId
+        };
+      } else {
+        state.pendingChannel = {groupId:targetGroupId, channelId};
+      }
+
+      state.page = "group-conflict";
+      await refresh();
+      return;
+    }
+
+    let updated;
+
+    if (page === "group-create-channel") {
+      updated = notifications.createGroup(
+        guild.id,
+        state.pendingCreate?.name ?? "New group",
+        channelId
+      );
+      state.pendingCreate = null;
+      state.status = `Created **${updated.name}**.`;
+    } else {
+      updated = notifications.updateGroup(guild.id, targetGroupId, {
+        discordChannelId:channelId
+      });
+      state.status = "Group channel updated.";
+    }
+
+    const held = applyHeldGroupChange(guild, state, updated);
+
+    state.group = held ?? updated;
+    state.groupOptions = state.group;
+    state.groups = notifications.getGuildGroups(guild.id);
+    state.page = "group";
+
+    await refresh();
+    return;
+  }
+
+  if (page === "group-conflict") {
+    if (parts[2] === "no") {
+      const wasCreate = Boolean(state.pendingCreate);
+      state.conflictGroup = null;
+
+      if (wasCreate) {
+        state.pendingCreate = null;
+        state.page = "groups";
+        state.status = "Group creation cancelled.";
+      } else {
+        state.pendingChannel = null;
+        state.page = "group";
+        state.status = "Channel change cancelled.";
+      }
+
+      await refresh();
+      return;
+    }
+
+    state.group = state.conflictGroup;
+    state.groupOptions = state.conflictGroup;
+    state.groups = notifications.getGuildGroups(guild.id);
+    state.page = "group";
+    state.status =
+      `**${state.conflictGroup.name}** uses that channel. Change its channel first — ` +
+      "the other change is held.";
+
+    await refresh();
+    return;
+  }
+
+  if (page === "group") {
+    const choice = component.values?.[0];
+
+    if (parts[2] === "back" || choice === "back") {
+      state.page = "groups";
+      state.status = null;
+      await refresh();
+      return;
+    }
+
+    if (choice === "multi") {
+      state.group = notifications.updateGroup(guild.id, state.group.groupId, {
+        allowMultiplePerChannel: !state.group.allowMultiplePerChannel
+      });
+      state.groups = notifications.getGuildGroups(guild.id);
+      state.status = state.group.allowMultiplePerChannel
+        ? "One channel can now add multiple posts to a group announcement."
+        : "Each channel can now add only one post to a group announcement.";
+      await refresh();
+      return;
+    }
+
+    if (choice === "types") {
+      state.groupOptions = state.group;
+      state.page = "group-types";
+      await refresh();
+      return;
+    }
+
+    if (["name","title","details","thumbnail","window"].includes(choice)) {
+      const customId = menuId("notification","group","field",choice);
+      const submission = await showNotificationModal(
+        component,
+        notificationGroupFieldModal(choice, state.group),
+        customId
+      );
+      if (!submission) {return;}
+
+      const key = choice === "window" ? "windowMinutes" : choice;
+      let value = submission.fields.getTextInputValue("value").trim();
+
+      if (choice === "window") {
+        value = Number(value);
+      } else if (choice !== "name") {
+        value = value || null;
+      }
+
+      state.group = notifications.updateGroup(guild.id, state.group.groupId, {[key]:value});
+      state.groups = notifications.getGuildGroups(guild.id);
+      state.status = `Updated ${choice}.`;
+
+      await submission.reply({content:state.status, flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+      await interaction.editReply(renderNotificationMenu(interaction, state)).catch(() => {});
+      return;
+    }
+
+    if (choice === "channel") {
+      state.page = "group-channel";
+      await refresh();
+      return;
+    }
+
+    if (choice === "mentions") {
+      state.groupOptions = state.group;
+      state.page = "group-mentions";
+      await refresh();
+      return;
+    }
+
+    if (choice === "members") {
+      state.page = "group-members";
+      await refresh();
+      return;
+    }
+
+    if (choice === "delete") {
+      state.page = "group-delete";
+      await refresh();
+      return;
+    }
+
+    await refresh();
+    return;
+  }
+
+  if (page === "group-types") {
+    if (parts[2] === "back") {
+      state.page = "group";
+      await refresh();
+      return;
+    }
+
+    const kinds = (component.values ?? [])
+      .filter(kind => NOTIFICATION_GROUP_KINDS.includes(kind));
+
+    state.group = notifications.updateGroup(guild.id, state.group.groupId, {
+      allowedKinds:kinds
+    });
+    state.groupOptions = state.group;
+    state.status = kinds.length
+      ? `Grouping allowed across: ${kinds.join(", ")}.`
+      : "Only identical content kinds will be grouped.";
+
+    await refresh();
+    return;
+  }
+
+  if (page === "group-mentions") {
+    const key = parts[3];
+
+    if (key === "back") {
+      state.page = "group";
+      await refresh();
+      return;
+    }
+
+    if (key === "toggle") {
+      state.groupOptions = notifications.updateGroup(guild.id, state.group.groupId, {
+        showCreatorOnEdit: !state.groupOptions.showCreatorOnEdit
+      });
+      state.group = state.groupOptions;
+      state.status = state.group.showCreatorOnEdit
+        ? "Group announcements will show the creator name on edit."
+        : "Group announcements will not show the creator name on edit.";
+      await refresh();
+      return;
+    }
+
+    if (key === "roles" || key === "users") {
+      state.groupOptions = notifications.updateGroup(guild.id, state.group.groupId, {
+        [key === "roles" ? "mentionRoles" : "mentionUsers"]: (component.values ?? []).slice(0, 5)
+      });
+      state.group = state.groupOptions;
+      state.status = key === "roles"
+        ? "Saved group role mentions."
+        : "Saved group user mentions.";
+      await refresh();
+      return;
+    }
+
+    await refresh();
+    return;
+  }
+
+  if (page === "group-members") {
+    if (parts[3] === "back") {
+      state.page = "group";
+      await refresh();
+      return;
+    }
+
+    const members = (component.values ?? []).map(value => {
+      const separator = value.indexOf(":");
+      return {
+        platform: value.slice(0, separator),
+        channelId: value.slice(separator + 1)
+      };
+    });
+
+    notifications.setGroupMembers(guild.id, state.group.groupId, members);
+    state.status = `Saved ${members.length} group member(s).`;
+    state.page = "group";
+    await refresh();
+    return;
+  }
+
+  if (page === "group-delete") {
+    if (parts[3] === "yes") {
+      notifications.deleteGroup(guild.id, state.group.groupId);
+      state.status = `Deleted the **${state.group.name}** group.`;
+      state.groups = notifications.getGuildGroups(guild.id);
+      state.group = null;
+      state.page = "groups";
+      await refresh();
+      return;
+    }
+
+    state.page = "group";
+    await refresh();
+    return;
+  }
+
+  if (page === "confirm") {
+    if (parts[2] === "cancel") {
+      state.page = "edit";
+      await refresh();
+      return;
+    }
+
+    if (parts[2] === "delete") {
+      const subscription = state.list[state.selection];
+      const result = notifications.deleteSubscription(guild.id, subscription.nickname, subscription.platform);
+      state.status = result.success
+        ? `Deleted the **${subscription.nickname}** notification.`
+        : `Could not delete that notification.`;
+      state.list = notifications.getGuildSubscriptions(guild.id);
+      state.page = "home";
+      await refresh();
+    }
+    return;
+  }
+
+  if (page === "channel") {
+    const subscription = state.list[state.selection];
+    const channelId = component.values?.[0];
+    const result = notifications.setSubscriptionChannel(
+      guild.id,
+      subscription.nickname,
+      subscription.platform,
+      channelId === "default" ? null : channelId
+    );
+
+    state.status = result.success
+      ? `Notifications for **${subscription.nickname}** now use ${channelId === "default" ? "the default channel" : `<#${channelId}>`}.`
+      : `Could not change the channel: ${result.reason}.`;
+    state.page = "home";
+    await refresh();
+    return;
+  }
+
+  if (page === "dedupe") {
+    const hours = Number(component.values?.[0] ?? 24);
+    setNotificationDedupeHours(guild.id, hours);
+    state.status = hours === 0
+      ? "Duplicate messages are off — matching streams always post a new message."
+      : `Matching streams reuse a recent message for **${hours} hour(s)**.`;
+    state.page = "home";
+    await refresh();
+    return;
+  }
+
+  if (page === "add" && parts[2] === "platform") {
+    const platform = component.values?.[0];
+    state.pendingAdd = {platform};
+    const submission = await showNotificationModal(component, notificationAddModal(platform), menuId("notification","add","form"));
+    if (!submission) {return;}
+
+    const creator = submission.fields.getTextInputValue("creator").trim();
+    const nickname = submission.fields.getTextInputValue("nickname").trim();
+    const customMessage = submission.fields.getTextInputValue("message").trim() || null;
+
+    if (!creator || !nickname) {
+      await submission.reply({content:"The creator and nickname cannot be empty.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+      return;
+    }
+
+    if (notifications.findGuildSubscription(guild.id, nickname, platform)) {
+      state.status = `A notification already uses the nickname **${nickname}**.`;
+      state.page = "home";
+      await submission.reply({content:state.status, flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+      await interaction.editReply(renderNotificationMenu(interaction, state)).catch(() => {});
+      return;
+    }
+
+    state.pendingAdd = {platform, creator, nickname, customMessage};
+    state.page = "add-channel";
+
+    await submission.reply({content:"Choose a destination channel in the menu.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+    await interaction.editReply(renderNotificationMenu(interaction, state)).catch(() => {});
+    return;
+  }
+
+  if (page === "add" && parts[2] === "channel") {
+    const channelId = component.values?.[0];
+    const pending = state.pendingAdd;
+    const result = await notifications.addSubscription(
+      guild.id,
+      pending.platform,
+      pending.creator,
+      pending.nickname,
+      channelId === "default" ? null : channelId,
+      pending.customMessage
+    );
+
+    if (!result.success) {
+      const platformName = notifications.getPlatformName(pending.platform);
+      state.status = result.reason === "entitlement-limit"
+        ? `No ${platformName} capacity left (${result.usage}/${result.limit}). Use \`/entitlement allocate\`.`
+        : result.reason === "already-exists"
+          ? `This server already follows that creator on ${platformName}.`
+          : `BargazBot could not find that creator on ${platformName}.`;
+    } else {
+      state.status = `Added **${result.channel.channel_name}** as **${pending.nickname}**.`;
+    }
+
+    state.pendingAdd = {};
+    state.list = notifications.getGuildSubscriptions(guild.id);
+    state.page = "home";
+    await refresh();
+    return;
+  }
+
+  await refresh();
 }

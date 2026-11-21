@@ -19,6 +19,9 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.10.2-dev.2 - Nov 20
+All changes under the next changelog, this commit only exists for simplicity during the process.
+
 ## v26.10.2-dev.1 - Nov 20
 This update msotly exists for a BargazLive update rather than a BargazBot update
 - Feedback form now has backend processes to post messages/tags/emojis/ect in the forums feedback channel in discord
