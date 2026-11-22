@@ -76,6 +76,7 @@ export function initDB() {
       welcome_message TEXT,
       goodbye_message TEXT,
       notice_channel_id TEXT,
+      timezone TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
@@ -609,6 +610,7 @@ export function initDB() {
   addColumnIfMissing("guild_settings", "goodbye_nickname", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing("guild_settings", "goodbye_profile", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing("guild_settings", "notice_channel_id", "TEXT");
+  addColumnIfMissing("guild_settings", "timezone", "TEXT");
   addColumnIfMissing("user_dm_settings", "timezone", "TEXT");
   addColumnIfMissing("youtube_channels", "content_available", "INTEGER NOT NULL DEFAULT 1");
   addColumnIfMissing("youtube_channels", "content_check_at", "INTEGER");
@@ -685,6 +687,26 @@ export function setNotificationDedupeHours(guildId, hours) {
       updated_at = CURRENT_TIMESTAMP
   `).run(guildId, value);
 
+  return value;
+}
+
+export function getGuildTimezone(guildId) {
+  const row = getDB().prepare(
+    "SELECT timezone FROM guild_settings WHERE guild_id = ?"
+  ).get(guildId);
+  return row?.timezone ?? null;
+}
+
+export function setGuildTimezone(guildId, timezone) {
+  ensureGuildRow(guildId);
+  const value = timezone ? String(timezone) : null;
+  getDB().prepare(`
+    INSERT INTO guild_settings (guild_id, timezone, created_at, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      timezone = excluded.timezone,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(guildId, value);
   return value;
 }
 

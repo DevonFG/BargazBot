@@ -43,6 +43,8 @@ export {
   getUserDmSubscriptions,
   emptyUserDmConfig,
   getUserDmConfig,
+  getGuildTimezone,
+  setGuildTimezone,
   getPrivacyNoticeChannel,
   savePrivacyNoticeChannel,
   isGuildSetupComplete,

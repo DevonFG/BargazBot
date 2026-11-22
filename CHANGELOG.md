@@ -19,6 +19,21 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.11.0-beta.2 - Nov 22
+- Fixed "10008 Unknown Message" error with flows using modals
+- Fixed inactivity and timer IDs (typos/missing prefixes)
+- Fixed modal/menu wiring for leave/join, inactivity, timers, and entitlement
+- Fixed command registration crashes
+- Added full DM support
+  - Command registration
+  - Rewrote /dm as 3 feature toggles for DMs
+  - Added DM gatting
+  - Added /dm-help in the same format as /help
+- Created /set-timezone using built-in Intl IANA names, defaults to UTC
+- Added guild_settings.timezone column to relevant databases
+- Timers and Birthdays now use guild/user timezone
+
+
 ## v26.11.0-beta.1 - Nov 22
 Note: Version jump due to major additions to update 
 - Updated .env to have correct and updated variables, including a few new/updated keys

@@ -128,6 +128,10 @@ export function getRule(guildId, ruleId) {
 
 export function createRule(guildId, data = {}) {
   ensureInactivityTables();
+  const name = String(data.name || "Inactivity rule").trim();
+  if (getRules(guildId).some(rule => rule.name.trim().toLowerCase() === name.toLowerCase())) {
+    throw new Error("An inactivity rule with that name already exists.");
+  }
   const scope = RULE_TYPES.has(data.scope) ? data.scope : "channel";
   const duration = Math.max(1, Number(data.durationMinutes ?? data.idleMinutes ?? data.thresholdMinutes ?? 60) || 60);
   const timeout = Math.max(1, Number(data.timeoutMinutes ?? duration) || duration);
@@ -145,7 +149,7 @@ export function createRule(guildId, data = {}) {
   `).run(
     guildId,
     ruleId,
-    String(data.name || "Inactivity rule"),
+    name,
     scope,
     message,
     duration,
@@ -173,7 +177,10 @@ export function updateRule(guildId, ruleId, data = {}) {
   const timeout = data.timeoutMinutes !== undefined
     ? Math.max(1, Number(data.timeoutMinutes) || duration)
     : existing.timeoutMinutes;
-  const name = data.name !== undefined ? String(data.name) : existing.name;
+  const name = data.name !== undefined ? String(data.name).trim() : existing.name;
+  if (getRules(guildId).some(rule => rule.ruleId !== ruleId && rule.name.trim().toLowerCase() === name.trim().toLowerCase())) {
+    throw new Error("An inactivity rule with that name already exists.");
+  }
   const message = data.message !== undefined ? String(data.message) : existing.message;
   const destination = data.destinationChannelId !== undefined
     ? data.destinationChannelId

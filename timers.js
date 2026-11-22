@@ -57,27 +57,28 @@ function parseIds(value) {
   return Array.isArray(parsed) ? parsed.map(String) : [];
 }
 
-function serverTimeZone() {
-  return resolveTimezone(null, "UTC");
+function serverTimeZone(guildId = null) {
+  const configured = guildId ? featureSettings.getGuildTimezone(guildId) : null;
+  return resolveTimezone(configured, "UTC");
 }
 
 function userTimeZone(userId) {
   const settings = featureSettings.getUserDmSettings(userId);
-  return resolveTimezone(settings?.timezone, serverTimeZone());
+  return resolveTimezone(settings?.timezone, "UTC");
 }
 
 function timerOwner(ownerType, ownerId) {
   if (ownerType === "user") {
     return {table:"user_timers", key:"user_id", id:ownerId, guildId:null, userId:ownerId, timeZone:userTimeZone(ownerId)};
   }
-  return {table:"timers", key:"guild_id", id:ownerId, guildId:ownerId, userId:null, timeZone:serverTimeZone()};
+  return {table:"timers", key:"guild_id", id:ownerId, guildId:ownerId, userId:null, timeZone:serverTimeZone(ownerId)};
 }
 
 function birthdayOwner(ownerType, ownerId) {
   if (ownerType === "user") {
     return {table:"user_birthdays", key:"user_id", id:ownerId, guildId:null, userId:ownerId, commandId:ownerId, timeZone:userTimeZone(ownerId)};
   }
-  return {table:"birthday_commands", key:"guild_id", id:ownerId, guildId:ownerId, userId:null, timeZone:serverTimeZone()};
+  return {table:"birthday_commands", key:"guild_id", id:ownerId, guildId:ownerId, userId:null, timeZone:serverTimeZone(ownerId)};
 }
 
 function storedTime(value) {
@@ -93,11 +94,11 @@ function isoTime(value) {
   return ms ? new Date(ms).toISOString() : null;
 }
 
-function announceTime(value) {
+function announceTime(value, timeZone = "UTC") {
   const ms = storedTime(value);
   if (!ms) {return "soon";}
   return formatRelativeTimestamp(new Date(ms).toISOString(), {
-    timeZone: serverTimeZone(),
+    timeZone,
     includeTime: true,
     now: new Date()
   });
@@ -613,11 +614,12 @@ async function fireTimer(guild, timer) {
     return;
   }
 
+  const timeZone = timer.timeZone ?? serverTimeZone(guild.id);
   const content = applyTemplate(timer.message || "Reminder: {name}", {
     name: timer.name,
     channel: `<#${channel.id}>`,
-    time: announceTime(timer.nextRunAt),
-    date: announceTime(timer.nextRunAt)
+    time: announceTime(timer.nextRunAt, timeZone),
+    date: announceTime(timer.nextRunAt, timeZone)
   });
   try {
     await channel.send({content, allowedMentions: {parse: []}});
@@ -635,7 +637,7 @@ async function fireTimer(guild, timer) {
     return;
   }
 
-  const parsed = parseTimerSchedule(timer.schedule, timer.timeZone ?? serverTimeZone());
+  const parsed = parseTimerSchedule(timer.schedule, timer.timeZone ?? serverTimeZone(guild.id));
   const next = parsed.valid ? nextOccurrence(parsed, new Date()) : null;
   if (next) {
     db.prepare("UPDATE timers SET next_run_at = ?, last_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE guild_id = ? AND timer_id = ?")

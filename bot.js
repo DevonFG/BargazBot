@@ -98,7 +98,29 @@ const COMMAND_FEATURES = {
   autopublish:  "autopublish",
   dm:           "dm"
 };
-const DIRECT_MESSAGE_COMMANDS = new Set(["ping", "help", "data", "dm"]);
+
+const DIRECT_MESSAGE_COMMANDS = new Set([
+  "ping", "help", "stats", "data", "dm", "dm-help",
+  "notification", "entitlement", "timers", "set-timezone"
+]);
+
+const ALWAYS_ALLOWED_DM_COMMANDS = new Set(["ping", "help", "stats", "data", "dm", "set-timezone"]);
+
+function isDmFeatureAllowed(interaction) {
+  if (interaction.guild) {return true;}
+
+  const settings = featureSettings.getUserDmSettings(interaction.user.id);
+  if (!settings.dmEnabled && !ALWAYS_ALLOWED_DM_COMMANDS.has(interaction.commandName)) {return false;}
+
+  if (interaction.commandName === "notification" || interaction.commandName === "entitlement") {
+    return settings.notificationsEnabled;
+  }
+  if (interaction.commandName === "timers") {
+    return settings.remindersEnabled || settings.birthdaysEnabled;
+  }
+
+  return true;
+}
 
 function getCommandFeature(commandName) {
   return COMMAND_FEATURES[commandName] ?? null;
@@ -556,6 +578,10 @@ onBotEvent("interactionCreate", async interaction => {
     return;
   }
   if (!await isCommandFeatureEnabled(interaction)) {return;}
+  if (!isDmFeatureAllowed(interaction)) {
+    await interaction.reply({content:"That DM feature is off. Use `/dm` to turn it on.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+    return;
+  }
 
   applyResponseMode(interaction, resolveResponseType(interaction, interaction.commandName));
   await commands.handleInteraction(interaction);

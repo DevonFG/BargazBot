@@ -28,6 +28,55 @@ Local Safety Tables
 =====================================================
 */
 
+function dmScopeId(userId) {
+  return `dm-${userId}`;
+}
+
+export function ensureDmEntitlementScope(userId) {
+  const scopeId = dmScopeId(userId);
+  getDB().prepare(`
+    INSERT INTO guilds (guild_id, guild_name, owner_id, created_at, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id) DO NOTHING
+  `).run(scopeId, "BargazBot DM", String(userId));
+  return scopeId;
+}
+
+export function autoAllocateDmEntitlements(userId) {
+  const scopeId = ensureDmEntitlementScope(userId);
+  const lines = [];
+
+  for (const platform of PLATFORMS) {
+    const available = getAvailableAllocation(userId, platform, scopeId);
+    if (!available.allowed) {continue;}
+
+    const result = setAllocation(
+      userId,
+      scopeId,
+      platform,
+      available.unlimited ? null : available.amount
+    );
+    if (!result.success) {continue;}
+
+    lines.push(`Full remaining **${platform[0].toUpperCase() + platform.slice(1)}** capacity allocated.`);
+  }
+
+  return {
+    scopeId,
+    message: lines.length
+      ? lines.join("\n")
+      : "No remaining entitlement capacity was available to allocate."
+  };
+}
+
+export function removeDmEntitlements(userId) {
+  const scopeId = dmScopeId(userId);
+  for (const platform of PLATFORMS) {
+    removeAllocation(userId, scopeId, platform);
+  }
+  return {scopeId};
+}
+
 function ensureAutoAllocationState() {
   const db = getDB();
   db.exec(`
