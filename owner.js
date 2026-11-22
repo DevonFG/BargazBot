@@ -189,7 +189,8 @@ async function broadcastOwnerUpdate(sourceMessage) {
     }
 
     try {
-      const channel = await channelManager.ensureChannel(guild, "updates");
+      const channel = await channelManager.getChannel(guild, "updates");
+      if (!channel) {skippedCount++; continue;}
       if (!channel?.isTextBased() || channel.isThread()) {
         throw new Error("No usable notification channel was available.");
       }

@@ -19,6 +19,38 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.11.0-beta.1 - Nov 22
+Note: Version jump due to major additions to update 
+- Updated .env to have correct and updated variables, including a few new/updated keys
+- Removed YouTube API Key from pm2 logs
+- Corrected initDB() so dependant modules load after databases are ready
+- Corrected SQLite DO syntax in a migration
+- Added user_dm_settings table
+- Repaired the storage_notices foreign key
+- Added a migration from installer_user_id to user_id for entitlements
+- Dropped the obsolette birthday_entries table
+- Guarded sendStorageNotice(0 with a permission check
+- Fixed shutdownStarted handling
+- Bounded shutdown notification work to 2s, allowing SQLite to close cleanly
+- Owner updates now use getChannel() instead of ensureChannel()
+  - They no longer attempt to create channels
+- New guilds now start with most features disabled
+- Entitlement toggles now allocate capacity to the server automatically by the user who ran the command
+- Disabling an entitlement toggle now removes allocation
+- /dm now exists and is only available in a DM setting
+- Fixed /features-config guild state handling
+- Fixed /autopublish mode:all
+- Created /leave-join command for the join and leave features
+- Added /test for testing notifications, leave, join, inactivity, logging, and timers
+- Rewrote a collecion of commands to use modals instead of message menus
+To Do:
+- Finish moving some commands to use modals
+- Autopublish doesn;t trigger
+- Fix entitlement action wiring
+- Make Notification groups work
+- create /set-timezone
+- More smaller changes
+
 ## v26.10.2-dev.4 - Nov 21
 - Restored missing sotrage.js helper for featureSettings.js and notifications.js can load
 - Added missing DM tables user_dm_subscriptions, user_dm_configsm and user_dm_settings.timezone

@@ -358,7 +358,7 @@ export function initDB() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (user_id, guild_id),
       FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-      FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE);
+      FOREIGN KEY (guild_id) REFERENCES users(guild_id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS user_dm_subscriptions (
       user_id TEXT NOT NULL,
       platform TEXT NOT NULL,
@@ -379,7 +379,7 @@ export function initDB() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (user_id, scope, scope_key),
       FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS feedback_settings (
+    CREATE TABLE IF NOT EXISTS user_dm_settings (
       user_id TEXT PRIMARY KEY,
       dms_enabled INTEGER NOT NULL DEFAULT 1,
       notifications_enabled INTEGER NOT NULL DEFAULT 0,
@@ -557,6 +557,7 @@ export function initDB() {
     )
     SELECT guild_id, 'creator', platform || ':' || channel_id, mention_roles, mention_users, show_creator_on_edit
     FROM notification_message_options
+    WHERE true
     ON CONFLICT(guild_id, scope, scope_key) DO NOTHING;
 
     INSERT INTO notification_configs (
@@ -601,8 +602,16 @@ export function initDB() {
   addColumnIfMissing("guild_settings", "installer_user_id", "TEXT");
   addColumnIfMissing("guild_settings", "welcome_message", "TEXT");
   addColumnIfMissing("guild_settings", "goodbye_message", "TEXT");
+  addColumnIfMissing("guild_settings", "welcome_username", "INTEGER NOT NULL DEFAULT 1");
+  addColumnIfMissing("guild_settings", "welcome_nickname", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("guild_settings", "welcome_profile", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("guild_settings", "goodbye_username", "INTEGER NOT NULL DEFAULT 1");
+  addColumnIfMissing("guild_settings", "goodbye_nickname", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("guild_settings", "goodbye_profile", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing("guild_settings", "notice_channel_id", "TEXT");
   addColumnIfMissing("user_dm_settings", "timezone", "TEXT");
+  addColumnIfMissing("youtube_channels", "content_available", "INTEGER NOT NULL DEFAULT 1");
+  addColumnIfMissing("youtube_channels", "content_check_at", "INTEGER");
 
   const notificationMessageColumns = db.prepare("PRAGMA table_info(notification_messages)").all().map(column => column.name);
   if (!notificationMessageColumns.includes("creator_channel_id")) {
@@ -712,6 +721,7 @@ export const FEATURE_KEYS = [
   "logs",
   "updates",
   "status",
+  "entitlement",
   "inactivity",
   "timers",
   "birthdays",
@@ -727,6 +737,7 @@ export const FEATURE_DEFAULTS = {
   logs:          {enabled: true,  responseType: "message"},
   updates:       {enabled: true,  responseType: null},
   status:        {enabled: true,  responseType: null},
+  entitlement:   {enabled: false, responseType: null},
   inactivity:    {enabled: false, responseType: "message"},
   timers:        {enabled: false, responseType: null},
   birthdays:     {enabled: false, responseType: null},
@@ -873,6 +884,85 @@ export function setGuildWelcomeMessage(guildId, message) {
       updated_at = CURRENT_TIMESTAMP
   `).run(guildId, message ?? null);
   return message ?? null;
+}
+
+
+export function getGuildWelcomeOptions(guildId) {
+  const row = getDB().prepare(
+    "SELECT welcome_username, welcome_nickname, welcome_profile FROM guild_settings WHERE guild_id = ?"
+  ).get(guildId) ?? {};
+  return {
+    username: row.welcome_username !== 0,
+    nickname: row.welcome_nickname === 1,
+    profile: row.welcome_profile === 1
+  };
+}
+
+export function setGuildWelcomeOptions(guildId, options = {}) {
+  ensureGuildRow(guildId);
+  getDB().prepare(`
+    INSERT INTO guild_settings (guild_id, welcome_username, welcome_nickname, welcome_profile, created_at, updated_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      welcome_username = excluded.welcome_username,
+      welcome_nickname = excluded.welcome_nickname,
+      welcome_profile = excluded.welcome_profile,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    guildId,
+    options.username === false ? 0 : 1,
+    options.nickname === true ? 1 : 0,
+    options.profile === true ? 1 : 0
+  );
+  return getGuildWelcomeOptions(guildId);
+}
+
+export function getGuildGoodbyeMessage(guildId) {
+  return getDB().prepare(
+    "SELECT goodbye_message FROM guild_settings WHERE guild_id = ?"
+  ).get(guildId)?.goodbye_message ?? null;
+}
+
+export function setGuildGoodbyeMessage(guildId, message) {
+  ensureGuildRow(guildId);
+  getDB().prepare(`
+    INSERT INTO guild_settings (guild_id, goodbye_message, created_at, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      goodbye_message = excluded.goodbye_message,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(guildId, message ?? null);
+  return message ?? null;
+}
+
+export function getGuildGoodbyeOptions(guildId) {
+  const row = getDB().prepare(
+    "SELECT goodbye_username, goodbye_nickname, goodbye_profile FROM guild_settings WHERE guild_id = ?"
+  ).get(guildId) ?? {};
+  return {
+    username: row.goodbye_username !== 0,
+    nickname: row.goodbye_nickname === 1,
+    profile: row.goodbye_profile === 1
+  };
+}
+
+export function setGuildGoodbyeOptions(guildId, options = {}) {
+  ensureGuildRow(guildId);
+  getDB().prepare(`
+    INSERT INTO guild_settings (guild_id, goodbye_username, goodbye_nickname, goodbye_profile, created_at, updated_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      goodbye_username = excluded.goodbye_username,
+      goodbye_nickname = excluded.goodbye_nickname,
+      goodbye_profile = excluded.goodbye_profile,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    guildId,
+    options.username === false ? 0 : 1,
+    options.nickname === true ? 1 : 0,
+    options.profile === true ? 1 : 0
+  );
+  return getGuildGoodbyeOptions(guildId);
 }
 
 export function getPrivacyNoticeChannel(guildId) {

@@ -12,6 +12,12 @@ const {
   getCommandResponseType,
   setCommandResponseType,
   setGuildWelcomeMessage,
+  getGuildWelcomeOptions,
+  setGuildWelcomeOptions,
+  getGuildGoodbyeMessage,
+  setGuildGoodbyeMessage,
+  getGuildGoodbyeOptions,
+  setGuildGoodbyeOptions,
   getUserDmSettings,
   setUserDmSetting,
   clearUserDmSettings,
@@ -30,6 +36,9 @@ export {
   getFeatureSetting,
   getCommandResponseType,
   getGuildWelcomeMessage,
+  getGuildWelcomeOptions,
+  getGuildGoodbyeMessage,
+  getGuildGoodbyeOptions,
   getUserDmSettings,
   getUserDmSubscriptions,
   emptyUserDmConfig,
@@ -117,12 +126,34 @@ export function updateGuildWelcomeMessage(guildId, message, actorId = null) {
   return result;
 }
 
+
+export function updateGuildWelcomeOptions(guildId, options, actorId = null) {
+  const result = setGuildWelcomeOptions(guildId, options);
+  logChange(guildId, "welcome options", `by=${actorId ?? "unknown"}`);
+  return result;
+}
+
+export function updateGuildGoodbyeMessage(guildId, message, actorId = null) {
+  const result = setGuildGoodbyeMessage(guildId, message);
+  logChange(guildId, "goodbye message", `by=${actorId ?? "unknown"}`);
+  return result;
+}
+
+export function updateGuildGoodbyeOptions(guildId, options, actorId = null) {
+  const result = setGuildGoodbyeOptions(guildId, options);
+  logChange(guildId, "goodbye options", `by=${actorId ?? "unknown"}`);
+  return result;
+}
+
 export function resetFeatureSettings(guildId, actorId = null) {
   for (const [feature, defaults] of Object.entries(FEATURE_DEFAULTS)) {
     setFeatureSetting(guildId, feature, {enabled:defaults.enabled, responseType:defaults.responseType});
   }
   setCommandResponseType(guildId, "ephemeral");
   setGuildWelcomeMessage(guildId, null);
+  setGuildGoodbyeMessage(guildId, null);
+  setGuildWelcomeOptions(guildId, {});
+  setGuildGoodbyeOptions(guildId, {});
   logChange(guildId, "feature settings reset", `by=${actorId ?? "unknown"}`);
 }
 

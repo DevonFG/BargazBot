@@ -65,8 +65,6 @@ const client = new discord.Client({
   ]
 });
 
-feedback.initFeedback(client);
-
 function onBotEvent(event, handler)   {client.on(event, trackBotCallback(handler));}
 function onceBotEvent(event, handler) {client.once(event, trackBotCallback(handler));}
 
@@ -77,6 +75,7 @@ process.on("uncaughtException", error => {console.error("Uncaught exception:", e
 process.on("unhandledRejection", reason => {console.error("Unhandled promise rejection:", reason);});
 
 initDB();
+feedback.initFeedback(client);
 
 let shutdownStarted = false;
 let servicesClosed = false;
@@ -92,7 +91,7 @@ Feature Gating and Response Types
 
 const COMMAND_FEATURES = {
   notification: "notifications",
-  entitlement:  "notifications",
+  entitlement:  "entitlement",
   logging:      "logging",
   inactivity:   "inactivity",
   timers:       "timers",
@@ -166,29 +165,76 @@ async function detectInstaller(guild) {
 
 async function sendWelcomeMessage(member) {
   try {
-    if (!featureSettings.isFeatureEnabled(member.guild.id, "welcome")) {return;}
-    const channel = await channelManager.getChannel(member.guild, "welcome");
+    const channel = await channelManager.findBargazChannel(member.guild);
     if (!channel) {return;}
-    const message = featureSettings.getGuildWelcomeMessage(member.guild.id)
-      ?? `Welcome to ${member.guild.name}, ${member}!`;
-    await channel.send({content: message, allowedMentions: {parse: []}});
+    await channel.send({
+      content: `Welcome to ${member.guild.name}, ${member}!`,
+      allowedMentions: {parse: []}
+    });
   } catch (error) {
-    appLogger.error("BargazBot welcome message failed:", member.guild.id, member.id, error);
+    appLogger.warn("BargazBot welcome message failed:", member.guild.id, member.id, error);
+  }
+}
+
+function buildGreetingEmbed(member, kind, options) {
+  const fields = [];
+  if (options.username) {fields.push({name:"Username", value:`\`${member.user.tag}\``, inline:true});}
+  if (options.nickname) {fields.push({name:"Nickname", value:`\`${member.displayName}\``, inline:true});}
+  if (options.profile) {
+    fields.push({name:"Account created", value:`<t:${Math.floor(member.user.createdAt.getTime() / 1000)}:R>`, inline:true});
+    if (kind === "welcome" && member.joinedAt) {
+      fields.push({name:"Joined server", value:`<t:${Math.floor(member.joinedAt.getTime() / 1000)}:R>`, inline:true});
+    }
+  }
+  if (fields.length === 0) {return null;}
+
+  const embed = new discord.EmbedBuilder()
+    .setTitle(kind === "welcome" ? "Member joined" : "Member left")
+    .setColor(kind === "welcome" ? 0x57F287 : 0xED4245);
+  if (options.profile) {embed.setThumbnail(member.user.displayAvatarURL());}
+  embed.addFields(fields);
+  return embed;
+}
+
+function renderGreetingMessage(template, member, kind) {
+  const fallback = kind === "welcome"
+    ? "Welcome to {server}, {user}!"
+    : "{user} has left {server}.";
+  return (template ?? fallback)
+    .replaceAll("{user}", `<@${member.id}>`)
+    .replaceAll("{username}", member.user.tag)
+    .replaceAll("{nickname}", member.displayName)
+    .replaceAll("{server}", member.guild.name)
+    .replaceAll("{count}", String(member.guild.memberCount));
+}
+
+async function sendMemberAnnouncement(member, kind) {
+  const feature = kind === "welcome" ? "welcome" : "goodbye";
+  try {
+    if (!featureSettings.isFeatureEnabled(member.guild.id, feature)) {return;}
+    const channel = await channelManager.getChannel(member.guild, feature);
+    if (!channel) {return;}
+
+    const template = kind === "welcome"
+      ? featureSettings.getGuildWelcomeMessage(member.guild.id)
+      : featureSettings.getGuildGoodbyeMessage(member.guild.id);
+    const options = kind === "welcome"
+      ? featureSettings.getGuildWelcomeOptions(member.guild.id)
+      : featureSettings.getGuildGoodbyeOptions(member.guild.id);
+    const embed = buildGreetingEmbed(member, kind, options);
+
+    await channel.send({
+      content: renderGreetingMessage(template, member, kind),
+      ...(embed ? {embeds:[embed]} : {}),
+      allowedMentions: {parse: []}
+    });
+  } catch (error) {
+    appLogger.warn(`BargazBot ${feature} announcement failed:`, member.guild.id, member.id, error);
   }
 }
 
 async function sendGoodbyeMessage(member) {
-  try {
-    if (!featureSettings.isFeatureEnabled(member.guild.id, "goodbye")) {return;}
-    const channel = await channelManager.getChannel(member.guild, "goodbye");
-    if (!channel) {return;}
-    await channel.send({
-      content: `${member.user.tag ?? member.displayName} has left ${member.guild.name}.`,
-      allowedMentions: {parse: []}
-    });
-  } catch (error) {
-    appLogger.error("BargazBot goodbye message failed:", member.guild.id, member.id, error);
-  }
+  await sendMemberAnnouncement(member, "goodbye");
 }
 
 /*
@@ -222,25 +268,52 @@ function closeBotServices() {
     stopDataCleanup();
     commands.stopCommandCollectors();
 
-    const stopping = await Promise.allSettled([
-      stopUpsNotifier(),
-      stopDiagnosticsNotifier()
+    const limited = async (label, promise, ms = 3000) => {
+      let timer;
+      try {
+        return await Promise.race([
+          Promise.resolve(promise),
+          new Promise(resolve => {
+            timer = setTimeout(() => {
+              console.log(`BargazBot shutdown step timed out: ${label}`);
+              resolve(undefined);
+            }, ms);
+          })
+        ]);
+      } finally {clearTimeout(timer);}
+    };
+
+    const finish = (async () => {
+      await Promise.allSettled([
+        limited("UPS notifier", stopUpsNotifier(), 2000),
+        limited("diagnostics notifier", stopDiagnosticsNotifier(), 2000)
+      ]);
+
+      await limited("bot tasks", drainBotTasks());
+      await limited("platform jobs", platformManager.drainPlatformJobs());
+
+      appLogger.setLogEventHandler(null);
+
+      await limited("health server", closeHealthServer());
+      await limited("Discord client", client.destroy());
+
+      if (!closeDB()) {throw new Error("SQLite could not close.");}
+    })();
+
+    const completed = await Promise.race([
+      finish.then(() => true, error => {
+        console.error("BargazBot shutdown cleanup failed:", error);
+        return false;
+      }),
+      new Promise(resolve => setTimeout(() => resolve(false), 20000))
     ]);
-    for (const result of stopping) {
-      if (result.status === "rejected") {console.error("Failed to stop a notifier:", result.reason);}
+
+    if (completed) {
+      servicesClosed = true;
+      console.log("BargazBot services stopped.");
+    } else {
+      console.warn("BargazBot shutdown cleanup timed out; continuing.");
     }
-
-    await drainBotTasks();
-    await platformManager.drainPlatformJobs();
-
-    appLogger.setLogEventHandler(null);
-
-    await closeHealthServer();
-    await client.destroy();
-
-    if (!closeDB()) {throw new Error("SQLite could not close.");}
-    servicesClosed = true;
-    console.log("BargazBot services stopped.");
   })();
 
   return shutdownTask;
@@ -364,15 +437,11 @@ onBotEvent("guildCreate", async guild => {
     channelManager.ensureGuildData(guild);
     const setup = await channelManager.setupGuild(guild);
     const installerId = await detectInstaller(guild);
-
     entitlements.ensureUser({id: installerId});
     permissions.ensureInstallerPermissions(guild, installerId);
     await channelManager.sendStorageNotice(guild, installerId);
-
-    if (!setup.skipped) {
-      entitlements.autoAllocateInstaller(guild.id, installerId);
-      console.log(`Set up BargazBot channels for guild: ${guild.name} (${guild.id})`);
-    }
+    for (const feature of ["autopublish", "inactivity", "timers"]) {featureSettings.setFeatureEnabled(guild.id, feature, false, installerId);}
+    if (!setup.skipped) {console.log(`Set up BargazBot channels for guild: ${guild.name} (${guild.id})`);}
   } catch (error) {
     appLogger.error("Failed to set up BargazBot for guild:", guild.id, error);
   }
@@ -387,6 +456,7 @@ onBotEvent("guildMemberAdd", async member => {
     entitlements.ensureGuildMember(member.guild.id, member.user.id, member.joinedAt);
     await channelManager.sendStorageNotice(member.guild, member.user.id);
     await sendWelcomeMessage(member);
+    await sendMemberAnnouncement(member, "welcome");
   } catch (error) {
     appLogger.error("Failed to process joining member:", member.guild.id, member.id, error);
   }

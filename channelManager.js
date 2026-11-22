@@ -289,7 +289,7 @@ async function fetchChannel(guild, channelId) {
   );
 }
 
-async function findBargazChannel(guild) {
+export async function findBargazChannel(guild) {
   const assignments = getChannelAssignments(guild.id) ?? {};
   const checked = new Set();
 
@@ -322,6 +322,13 @@ async function createBargazChannel(guild, reason) {
 Initial Guild Setup
 =====================================================
 */
+
+export async function ensureBargazChannel(guild) {
+  let channel = await findBargazChannel(guild);
+  if (!channel) {channel = await createBargazChannel(guild, "BargazBot feature setup");}
+  if (!hasGuildConfiguration(guild.id)) {saveDefaultChannelAssignments(guild.id, channel.id);}
+  return channel;
+}
 
 export async function setupGuild(guild, options = {}) {
   const force = Boolean(options.force);
@@ -477,6 +484,7 @@ export async function ensurePrivacyChannel(guild, userId) {
 }
 
 export async function sendStorageNotice(guild, userId, options = {}) {
+  if (!guild.members.me?.permissions?.has(discord.PermissionFlagsBits.ManageChannels)) {return false;}
   const force = Boolean(options.force);
   const record = getPrivacyChannelRecord(guild.id, userId);
   if (!force && record?.notice_sent_at) {return false;}

@@ -29,6 +29,21 @@ function trackJob(promise) {
   return job;
 }
 
+function describePlatformError(error) {
+  const status =
+    error?.response?.status ??
+    null;
+
+  const message =
+    error?.response?.data?.error?.message ??
+    error?.message ??
+    String(error);
+
+  return status
+    ? `${status}: ${message}`
+    : message;
+}
+
 export async function drainPlatformJobs() {
   while (activeJobs.size > 0 || monitorRunning || metadataRunning) {
     if (activeJobs.size > 0) {
@@ -193,6 +208,7 @@ async function checkYouTube() {
   const results = [];
 
   for (const channel of channels) {
+    if (stopping || isShutdownrequested()) {break;}
     try {
       const channelResults =
         await youtube.checkChannel(
@@ -219,7 +235,7 @@ async function checkYouTube() {
     } catch (error) {
       console.error(
         `Failed to check YouTube channel ${channel.channel_id}:`,
-        error
+        describePlatformError(error)
       );
     }
   }
@@ -370,7 +386,7 @@ async function refreshYouTubeMetadata() {
   } catch (error) {
     console.error(
       "Failed to refresh active YouTube content:",
-      error
+      describePlatformError(error)
     );
 
   } finally {

@@ -203,6 +203,7 @@ export async function publishAll(client, guildId) {
 
   try {
     guild = await client.guilds.fetch(guildId);
+    await guild.channels.fetch();
     const config = listAutopublish(guildId);
     const channels = config.allEnabled
       ? [...guild.channels.cache.values()].filter(channel => isAnnouncementChannel(channel))

@@ -40,6 +40,28 @@ function ensureAutoAllocationState() {
       FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
     )
   `);
+
+  const autoColumns = db.prepare("PRAGMA table_info(entitlement_auto_allocations)").all().map(column => column.name);
+  if (!autoColumns.includes("user_id") && autoColumns.includes("installer_user_id")) {
+    db.exec(`
+      CREATE TABLE entitlement_auto_allocations_migrated (
+        user_id TEXT NOT NULL,
+        guild_id TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, guild_id),
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+        FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+      );
+      INSERT INTO entitlement_auto_allocations_migrated (user_id, guild_id, created_at)
+      SELECT a.installer_user_id, a.guild_id, a.created_at
+      FROM entitlement_auto_allocations a
+      WHERE EXISTS (SELECT 1 FROM users u WHERE u.user_id = a.installer_user_id)
+        AND EXISTS (SELECT 1 FROM guilds g WHERE g.guild_id = a.guild_id);
+      DROP TABLE entitlement_auto_allocations;
+      ALTER TABLE entitlement_auto_allocations_migrated RENAME TO entitlement_auto_allocations;
+    `);
+  }
+
   const columns = db.prepare("PRAGMA table_info(entitlement_allocations)").all().map(column => column.name);
   if (!columns.includes("auto_allocated")) {
     db.exec("ALTER TABLE entitlement_allocations ADD COLUMN auto_allocated INTEGER NOT NULL DEFAULT 0");
@@ -355,4 +377,12 @@ export function hasInstallerAutoAllocation(guildId, installerId) {
   if (!guildId || !installerId) {return false;}
   ensureAutoAllocationState();
   return hasAutoAllocation(installerId, guildId);
+}
+
+export function clearInstallerAutoAllocation(guildId, installerId) {
+  if (!guildId || !installerId) {return false;}
+  ensureAutoAllocationState();
+  return getDB().prepare(
+    "DELETE FROM entitlement_auto_allocations WHERE user_id = ? AND guild_id = ?"
+  ).run(installerId, guildId).changes > 0;
 }

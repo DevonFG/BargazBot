@@ -15,6 +15,8 @@ const API_COSTS = {
   search: 100
 };
 
+const CONTENT_RECHECK_INTERVAL = 24 * 60 * 60 * 1000;
+
 let quotaUsed = 0;
 let quotaDate = getQuotaDate();
 
@@ -66,7 +68,7 @@ YouTube API
 =====================================================
 */
 
-async function youtubeRequest(endpoint, params, quotaCost = 1) {
+async function youtubeRequest(endpoint, params, quotaCost = 1, options = {}) {
   if (!process.env.YOUTUBE_API_KEY) {
     throw new Error(
       "YOUTUBE_API_KEY is not configured."
@@ -95,10 +97,12 @@ async function youtubeRequest(endpoint, params, quotaCost = 1) {
       error.response?.data?.error?.message ??
       error.message;
 
-    console.error(
-      `YouTube API request failed (${endpoint}):`,
-      apiError
-    );
+    if (!options.quiet) {
+      console.error(
+        `YouTube API request failed (${endpoint}):`,
+        apiError
+      );
+    }
 
     throw error;
   }
@@ -291,13 +295,14 @@ export function getStoredChannel(channelId) {
       channel_handle,
       uploads_playlist_id,
       last_upload_id,
+      content_available,
+      content_check_at,
       created_at,
       updated_at
     FROM youtube_channels
     WHERE channel_id = ?
   `).get(channelId) ?? null;
 }
-
 
 export function saveChannel(channel) {
   const db = getDB();
@@ -327,6 +332,8 @@ export function saveChannel(channel) {
       channel_url = excluded.channel_url,
       channel_handle = excluded.channel_handle,
       uploads_playlist_id = excluded.uploads_playlist_id,
+      content_available = 1,
+      content_check_at = NULL,
       updated_at = CURRENT_TIMESTAMP
   `).run(
     channel.channelId,
@@ -370,7 +377,9 @@ export function getSubscribedChannels() {
       youtube_channels.channel_url,
       youtube_channels.channel_handle,
       youtube_channels.uploads_playlist_id,
-      youtube_channels.last_upload_id
+      youtube_channels.last_upload_id,
+      youtube_channels.content_available,
+      youtube_channels.content_check_at
     FROM youtube_channels
 
     INNER JOIN guild_youtube_subs
@@ -406,7 +415,8 @@ Uploads Playlist
 
 async function getRecentUploadIds(
   uploadsPlaylistId,
-  maxResults = 10
+  maxResults = 10,
+  options = {}
 ) {
   if (!uploadsPlaylistId) {
     return [];
@@ -419,7 +429,8 @@ async function getRecentUploadIds(
       playlistId: uploadsPlaylistId,
       maxResults
     },
-    API_COSTS.playlistItems
+    API_COSTS.playlistItems,
+    options
   );
 
   return (
@@ -988,19 +999,153 @@ Channel Polling
 =====================================================
 */
 
-export async function checkChannel(channel) {
-  if (!channel.uploads_playlist_id) {
-    console.warn(
-      `YouTube channel ${channel.channel_id} has no uploads playlist ID.`
-    );
+function isPlaylistNotFoundError(error) {
+  if (error?.response?.status !== 404) {
+    return false;
+  }
 
+  const message =
+    String(error.response?.data?.error?.message ?? "");
+
+  return /playlistId|playlist identified/i.test(message);
+}
+
+function setChannelContentState(
+  channelId,
+  available,
+  checkAt = null
+) {
+  const db = getDB();
+
+  db.prepare(`
+    UPDATE youtube_channels
+    SET
+      content_available = ?,
+      content_check_at = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE channel_id = ?
+  `).run(
+    available ? 1 : 0,
+    available ? null : (checkAt ?? Date.now()),
+    channelId
+  );
+}
+
+function markNoContent(channel, now) {
+  if (channel.content_available !== 0) {
+    console.warn(
+      `YouTube channel ${channel.channel_id} has no accessible uploads playlist; pausing checks for 24 hours.`
+    );
+  }
+
+  setChannelContentState(channel.channel_id, false, now);
+}
+
+async function checkChannelHasContent(channelId) {
+  const data = await youtubeRequest(
+    "search",
+    {
+      part: "snippet",
+      channelId,
+      type: "video",
+      maxResults: 1
+    },
+    API_COSTS.search
+  );
+
+  return (data.items ?? []).length > 0;
+}
+
+async function refreshUploadsPlaylistId(channelId) {
+  const channel = await getChannelById(channelId);
+
+  const uploadsPlaylistId =
+    channel?.contentDetails
+      ?.relatedPlaylists
+      ?.uploads ?? null;
+
+  if (!uploadsPlaylistId) {
+    return null;
+  }
+  const db = getDB();
+  db.prepare(`
+    UPDATE youtube_channels
+    SET
+      uploads_playlist_id = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE channel_id = ?
+  `).run(
+    uploadsPlaylistId,
+    channelId
+  );
+  return uploadsPlaylistId;
+}
+
+export async function checkChannel(channel) {
+  const now = Date.now();
+
+  if (channel.content_available === 0) {
+    const nextCheck =
+      Number(channel.content_check_at ?? 0) +
+      CONTENT_RECHECK_INTERVAL;
+
+    if (now < nextCheck) {
+      return [];
+    }
+
+    const hasContent =
+      await checkChannelHasContent(channel.channel_id);
+
+    if (!hasContent) {
+      markNoContent(channel, now);
+      return [];
+    }
+
+    setChannelContentState(channel.channel_id, true);
+
+    if (!await refreshUploadsPlaylistId(channel.channel_id)) {
+      markNoContent(channel, now);
+      return [];
+    }
+
+    channel = getStoredChannel(channel.channel_id);
+  }
+
+  if (!channel.uploads_playlist_id) {
+    markNoContent(channel, now);
     return [];
   }
 
-  const recentIds =
-    await getRecentUploadIds(
-      channel.uploads_playlist_id
-    );
+  let recentIds;
+
+  try {
+    recentIds =
+      await getRecentUploadIds(channel.uploads_playlist_id, 10, {quiet:true});
+  } catch (error) {
+    if (!isPlaylistNotFoundError(error)) {
+      throw error;
+    }
+
+    const hasContent =
+      await checkChannelHasContent(channel.channel_id);
+
+    if (!hasContent) {
+      markNoContent(channel, now);
+      return [];
+    }
+
+    setChannelContentState(channel.channel_id, true);
+
+    if (!await refreshUploadsPlaylistId(channel.channel_id)) {
+      markNoContent(channel, now);
+      return [];
+    }
+
+    channel = getStoredChannel(channel.channel_id);
+
+    recentIds =
+      await getRecentUploadIds(channel.uploads_playlist_id, 10, {quiet:true});
+  }
 
   if (recentIds.length === 0) {
     return [];
@@ -1080,7 +1225,6 @@ export async function checkChannel(channel) {
 
   return results;
 }
-
 
 /*
 =====================================================
