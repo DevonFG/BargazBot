@@ -19,6 +19,15 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.11.0 - Nov 22
+- Created /invite command with menu to select what features you wan to use to give the correct permissions needed
+- Added counters with a /counter command that can create locked voice channels that count the number of people, bots, accounts, or people part of a role in a server
+- Fixed autopublish by using message.crosspost() instead of message.publish()
+- Added DM users count to /stats
+- Fixed goodbye messages
+- Fixed notification group menu navigation and added proper customization
+- Hardened /restore-all to only be usable in the owner server by my user ID
+
 ## v26.11.0-beta.2 - Nov 22
 - Fixed "10008 Unknown Message" error with flows using modals
 - Fixed inactivity and timer IDs (typos/missing prefixes)

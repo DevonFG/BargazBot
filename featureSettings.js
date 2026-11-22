@@ -49,6 +49,7 @@ export {
   savePrivacyNoticeChannel,
   isGuildSetupComplete,
   markGuildSetupComplete,
+  countDmEnabledUsers,
   resetGuildSetup
 } from "./storage.js";
 

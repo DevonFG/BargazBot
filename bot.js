@@ -17,6 +17,7 @@ import * as featureSettings from "./featureSettings.js";
 import * as inactivity      from "./inactivity.js";
 import * as timers          from "./timers.js";
 import * as autopublish     from "./autopublish.js";
+import * as counters        from "./counters.js";
 
 import {startUpsNotifier, stopUpsNotifier}                           from "./upsNotifier.js";
 import {startDiagnosticsNotifier, stopDiagnosticsNotifier}           from "./diagnosticsNotifier.js";
@@ -95,16 +96,15 @@ const COMMAND_FEATURES = {
   logging:      "logging",
   inactivity:   "inactivity",
   timers:       "timers",
-  autopublish:  "autopublish",
   dm:           "dm"
 };
 
 const DIRECT_MESSAGE_COMMANDS = new Set([
-  "ping", "help", "stats", "data", "dm", "dm-help",
+  "ping", "help", "stats", "data", "dm", "dm-help", "invite",
   "notification", "entitlement", "timers", "set-timezone"
 ]);
 
-const ALWAYS_ALLOWED_DM_COMMANDS = new Set(["ping", "help", "stats", "data", "dm", "set-timezone"]);
+const ALWAYS_ALLOWED_DM_COMMANDS = new Set(["ping", "help", "stats", "data", "dm", "set-timezone", "invite"]);
 
 function isDmFeatureAllowed(interaction) {
   if (interaction.guild) {return true;}
@@ -286,6 +286,7 @@ function closeBotServices() {
     inactivity.stopInactivityMonitor();
     timers.stopTimers();
     autopublish.stopAutoPublish();
+    counters.stopCounters();
     platformManager.stopPlatformManager();
     stopDataCleanup();
     commands.stopCommandCollectors();
@@ -451,6 +452,7 @@ onceBotEvent("clientReady", async () => {
   inactivity.startInactivityMonitor(client);
   timers.startTimers(client);
   autopublish.startAutoPublish(client);
+  counters.startCounters(client);
 });
 
 onBotEvent("guildCreate", async guild => {
@@ -479,6 +481,7 @@ onBotEvent("guildMemberAdd", async member => {
     await channelManager.sendStorageNotice(member.guild, member.user.id);
     await sendWelcomeMessage(member);
     await sendMemberAnnouncement(member, "welcome");
+    await counters.refreshGuildCounters(member.guild);
   } catch (error) {
     appLogger.error("Failed to process joining member:", member.guild.id, member.id, error);
   }
@@ -488,6 +491,11 @@ onBotEvent("guildMemberUpdate", async (oldMember, newMember) => {
   if (isShutdownRequested()) {return;}
   try {
     const previouslyAllowed = permissions.canUseCommand(oldMember, "entitlement", "allocate");
+    const beforeRoles = new Set(oldMember.roles.cache.keys());
+    const afterRoles  = new Set(newMember.roles.cache.keys());
+    if (beforeRoles.size !== afterRoles.size || [...beforeRoles].some(id => !afterRoles.has(id))) {
+      await counters.refreshGuildCounters(newMember.guild);
+    }
     const currentlyAllowed  = permissions.canUseCommand(newMember, "entitlement", "allocate");
     if (previouslyAllowed && !currentlyAllowed) {
       entitlements.removeGuildMember(newMember.guild.id, newMember.id);
@@ -503,6 +511,7 @@ onBotEvent("guildMemberRemove", async member => {
   try {
     entitlements.removeGuildAllocations(member.id, member.guild.id);
     await sendGoodbyeMessage(member);
+    await counters.refreshGuildCounters(member.guild);
   } catch (error) {
     appLogger.error("Failed to process departing member:", member.guild.id, member.id, error);
   }

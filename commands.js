@@ -11,6 +11,7 @@ import * as autopublish      from "./autopublish.js";
 import * as youtube          from "./youtube.js";
 import * as twitch           from "./twitch.js";
 import * as kick             from "./kick.js";
+import * as counters         from "./counters.js";
 import fs                    from "node:fs";
 import path                  from "node:path";
 import Database              from "better-sqlite3";
@@ -287,8 +288,14 @@ const commands = [
 
   new discord.SlashCommandBuilder()
     .setName("restore-all")
-    .setDescription("Restore every server from a backup. Bot owner only."),
+    .setDescription("Restore every server from a backup. Bot owner only.")
+    .setDefaultMemberPermissions(discord.PermissionFlagsBits.Administrator)
+    .setContexts(0),
 
+  new discord.SlashCommandBuilder()
+    .setName("counter")
+    .setDescription("Configure voice-channel member counters.")
+    .setContexts(0),
   //===================================================
   // Entitlements
   //===================================================
@@ -353,13 +360,30 @@ const commands = [
     )
     .setIntegrationTypes(0, 1)
     .setContexts(0, 1),
+  new discord.SlashCommandBuilder()
+    .setName("invite")
+    .setDescription("Get an invite link for BargazBot with the permissions you need.")
+    .setIntegrationTypes(0, 1)
+    .setContexts(0, 1),
 ]
 // Registers BargazBot's slash commands with Discord
 // client = Discord Client
 export async function registerCommands(client) {
-  const commandData = commands.map(command => command.toJSON());
-  await client.application.commands.set(commandData);
-  console.log(`Registered ${commandData.length} BargazBot commands.`);
+  const ownerServerId = process.env.OWNER_SERVER_ID;
+  const globalData = commands
+    .filter(command => command.name !== "restore-all")
+    .map(command => command.toJSON());
+
+  await client.application.commands.set(globalData);
+  console.log(`Registered ${globalData.length} global BargazBot commands.`);
+
+  if (ownerServerId) {
+    const restoreAll = commands.find(command => command.name === "restore-all");
+    if (restoreAll) {
+      await client.application.commands.set([restoreAll.toJSON()], ownerServerId);
+      console.log("Registered /restore-all in the owner server only.");
+    }
+  }
 }
 
 async function getGitHubCommitCount() {
@@ -389,6 +413,7 @@ async function handleStats(interaction) {
       {name:"Twitch channels",   value:String(twitch.getSubscribedChannels().length),    inline:true},
       {name:"Kick channels",     value:String(kick.getSubscribedChannels().length),      inline:true},
       {name:"GitHub commits",    value:commits, inline:true},
+      {name:"DM Features on",    value:String(featureSettings.countDmEnabledUsers()), inline:true},
       {name:"Version",           value:BOT_VERSION, inline:true}
     )
     .setTimestamp();
@@ -860,6 +885,8 @@ export async function handleInteraction(interaction) {
       case "autopublish":     await handleAutopublish(interaction); break;
       case "dm-help":         await handleDmHelp(interaction); break;
       case "set-timezone":    await handleSetTimezone(interaction); break;
+      case "counter":         await handleCounter(interaction); break;
+      case "invite":          await handleInvite(interaction); break;
       case "dm":              await handleDm(interaction); break;
       case "test":            await handleTest(interaction); break;
       default: await interaction.reply({content: "BargazBot does not recognize this command.", flags: discord.MessageFlags.Ephemeral});
@@ -967,7 +994,7 @@ async function handleHelp(interaction) {
 async function handleDmHelp(interaction) {
   const dmCommandNames = new Set([
     "ping", "help", "stats", "data", "dm", "dm-help",
-    "notification", "entitlement", "timers", "set-timezone"
+    "notification", "entitlement", "timers", "set-timezone", "invite"
   ]);
   const catalog = buildCommandCatalog().filter(command => dmCommandNames.has(command.name));
   const requested = interaction.options.getString("command")?.replace(/^\//, "").trim().toLowerCase();
@@ -998,7 +1025,7 @@ const FEATURE_LABELS = {
   notifications:"Creator notifications", welcome:"Welcome messages", goodbye:"Goodbye messages",
   logs:"Server logs", updates:"BargazBot updates", status:"Status",
   inactivity:"Inactivity alerts", timers:"Timers and reminders", birthdays:"Birthday announcements",
-  autopublish:"Auto publish", dm:"Direct messages"
+  autopublish:"Auto publish", dm:"Direct messages", counters:"Server counters",
 };
 
 const CHANNEL_PURPOSES = [
@@ -2914,17 +2941,18 @@ function renderNotificationMenu(interaction, state) {
       embed.setTitle("Announcement Groups");
       embed.setDescription((state.status ? `${state.status}\n\n` : "") +
         "Choose a group, or create a new one. Every group needs a channel.");
-      rows = [
-        buildSelectRow(menuId("notification","groups"), state.groups.map((group, index) => menuOption(
+      rows = [];
+      if (state.groups.length) {
+        rows.push(buildSelectRow(menuId("notification","groups"), state.groups.map((group, index) => menuOption(
           group.name,
           String(index),
           `${notifications.getGroupMembers(interaction.guild.id, group.groupId).length} creator(s) • ${group.windowMinutes} min`
-        )), {placeholder:"Choose a group"}),
-        buildButtonRow([
-          {customId:menuId("notification","groups","create"),label:"Create group",style:"success"},
-          {customId:menuId("notification","groups","back"),label:"Back",style:"secondary"}
-        ])
-      ];
+        )), {placeholder:"Choose a group"}));
+      }
+      rows.push(buildButtonRow([
+        {customId:menuId("notification","groups","create"),label:"Create group",style:"success"},
+        {customId:menuId("notification","groups","back"),label:"Back",style:"secondary"}
+      ]));
       break;
     }
 
@@ -3430,8 +3458,8 @@ async function handleNotificationComponent(component, interaction, state, collec
       state.page = "test";
     } else if (choice === "groups" && state.canUse("groups")) {
       state.groups = notifications.getGuildGroups(guild.id);
-      state.page = state.groups.length ? "groups" : "home";
-      if (!state.groups.length) {state.status = "No announcement groups are configured.";}
+      state.page = "groups";
+      state.status = null;
     } else if (["edit","delete","refresh"].includes(choice) && state.canUse(choice)) {
       state.action = choice;
       state.list = notifications.getGuildSubscriptions(guild.id);
@@ -3846,8 +3874,10 @@ async function handleNotificationComponent(component, interaction, state, collec
       ? `Grouping allowed across: ${kinds.join(", ")}.`
       : "Only identical content kinds will be grouped.";
 
+    state.page = "group";
     await refresh();
     return;
+
   }
 
   if (page === "group-mentions") {
@@ -4701,6 +4731,9 @@ async function handleAutopublish(interaction) {
   if (!interaction.guild) {await interaction.reply({content:"This command can only be used in a Discord server.", flags:discord.MessageFlags.Ephemeral}); return;}
   if (!await requireCommandAccess(interaction,"autopublish","setup")) {return;}
   const mode = interaction.options.getString("mode", true);
+  if (mode !== "list") {
+    featureSettings.setFeatureEnabled(interaction.guild.id, "autopublish", true, interaction.user.id);
+  }
 
   if (mode === "list") {
     const channels = autopublish.getChannels(interaction.guild.id);
@@ -4816,6 +4849,443 @@ async function handleSetTimezone(interaction) {
         .setTimestamp()],
       components:[]
     });
+  });
+}
+
+const INVITE_BASE_PERMISSIONS = [
+  discord.PermissionFlagsBits.ViewChannel,
+  discord.PermissionFlagsBits.SendMessages,
+  discord.PermissionFlagsBits.EmbedLinks,
+  discord.PermissionFlagsBits.UseApplicationCommands
+];
+
+const INVITE_PURPOSE_PERMISSIONS = {
+  notifications: [discord.PermissionFlagsBits.MentionEveryone],
+  welcome:       [],
+  goodbye:       [],
+  logs:          [discord.PermissionFlagsBits.ReadMessageHistory],
+  updates:       [],
+  status:        [],
+  inactivity:    [discord.PermissionFlagsBits.MentionEveryone],
+  timers:        [discord.PermissionFlagsBits.MentionEveryone],
+  birthdays:     [discord.PermissionFlagsBits.MentionEveryone],
+  autopublish:   [discord.PermissionFlagsBits.ManageMessages],
+  dm:            [],
+  counters:      [discord.PermissionFlagsBits.ManageChannels, discord.PermissionFlagsBits.ManageRoles]
+};
+
+function invitePermissionsFor(selected) {
+  const bits = new Set(INVITE_BASE_PERMISSIONS);
+  const keys = selected.includes("all") ? Object.keys(INVITE_PURPOSE_PERMISSIONS) : selected;
+  for (const key of keys) {for (const bit of INVITE_PURPOSE_PERMISSIONS[key] ?? []) {bits.add(bit);}}
+  return [...bits].reduce((total, bit) => total | bit, 0n).toString();
+}
+
+function buildInviteUrl(applicationId, permissions, userInstall) {
+  if (userInstall) {
+    return `https://discord.com/oauth2/authorize?client_id=${applicationId}&scope=applications.commands&integration_type=1`;
+  }
+  const scope = encodeURIComponent("bot applications.commands");
+  return `https://discord.com/oauth2/authorize?client_id=${applicationId}&scope=${scope}&permissions=${permissions}&integration_type=0`;
+}
+
+async function handleInvite(interaction) {
+  const options = [
+    menuOption("All (recommended)", "all", "The normal invite with every BargazBot permission"),
+    ...Object.keys(INVITE_PURPOSE_PERMISSIONS).map(key => menuOption(
+      FEATURE_LABELS[key] ?? key,
+      key,
+      INVITE_PURPOSE_PERMISSIONS[key].length ? "Includes extra permissions" : "Base permissions only"
+    ))
+  ];
+
+  await interaction.reply({
+    embeds:[new discord.EmbedBuilder()
+      .setTitle("Invite BargazBot")
+      .setDescription(
+        "Choose what you want to use BargazBot for. I'll build an invite link with the permissions for it.\n\n" +
+        "**All** is the normal invite with every permission BargazBot uses."
+      )
+      .setTimestamp()],
+    components:[buildSelectRow(menuId("invite"), options, {
+      placeholder:"What will you use BargazBot for?",
+      maxValues:Math.min(options.length, 25)
+    })],
+    flags:discord.MessageFlags.Ephemeral
+  });
+
+  const message = await interaction.fetchReply();
+  const collector = interaction.channel.createMessageComponentCollector({
+    filter:item => item.user.id === interaction.user.id && item.message?.id === message.id,
+    time:300000
+  });
+
+  onCommandComponent(collector, async component => {
+    const selected = component.values ?? [];
+    const permissions = invitePermissionsFor(selected);
+    const applicationId = interaction.client.application.id;
+    const labels = selected.includes("all")
+      ? "all configured permissions"
+      : selected.map(key => FEATURE_LABELS[key] ?? key).join(", ");
+    const serverUrl = buildInviteUrl(applicationId, permissions, false);
+    const userUrl = buildInviteUrl(applicationId, permissions, true);
+
+    await component.update({
+      embeds:[new discord.EmbedBuilder()
+        .setTitle("BargazBot invite")
+        .setDescription(
+          `**Server invite** (${labels}): [Add to a server](${serverUrl})\n\n` +
+          `[Add BargazBot to your DMs](${userUrl})`
+        )
+        .setTimestamp()],
+      components:[]
+    });
+  });
+}
+
+const COUNTER_TYPE_OPTIONS = [
+  menuOption("Accounts", "accounts", "Every member, including bots"),
+  menuOption("Bots", "bots", "Bot accounts only"),
+  menuOption("Members", "members", "People, excluding bots"),
+  menuOption("Role", "role", "People with a chosen role")
+];
+
+function matchingRoles(guild, query) {
+  const needle = (query || "").trim().toLowerCase();
+  return [...guild.roles.cache.values()]
+    .filter(role => role.id !== guild.id && !role.managed)
+    .filter(role => !needle || role.name.toLowerCase().includes(needle))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, {sensitivity:"base"}));
+}
+
+function counterRoleOptions(guild, page = 0, query = "") {
+  return matchingRoles(guild, query)
+    .slice(page * 25, page * 25 + 25)
+    .map(role => menuOption(role.name, role.id, "Role"));
+}
+
+async function handleCounter(interaction) {
+  if (!interaction.guild) {
+    await interaction.reply({content:"Use this command in a server.", flags:discord.MessageFlags.Ephemeral});
+    return;
+  }
+  if (!await requireCommandAccess(interaction, "counter", "setup")) {return;}
+
+  const guild = interaction.guild;
+  const state = {page:"home", mode:null, returnPage:"home", status:null, draft:null, selectedId:null, rolePage:0, roleQuery:""};
+  const openRolePage = returnPage => {
+    state.rolePage = 0;
+    state.roleQuery = "";
+    state.page = "role";
+    state.returnPage = returnPage;
+  };
+  const currentCounter = () => state.selectedId ? counters.getCounter(guild.id, state.selectedId) : null;
+  const backButton = () => buildButtonRow([
+    {customId:menuId("counter","back"), label:"Back", style:"secondary"}
+  ]);
+
+  const finishDraft = async source => {
+    try {
+      const counter = await counters.createCounter(guild, state.draft);
+      await counters.refreshGuildCounters(guild);
+      state.status = `Created **${counter.label ?? counters.defaultLabel(counter, guild)}** in <#${counter.channelId}>.`;
+    } catch (error) {
+      log.error("BargazBot counter create failed:", error);
+      state.status = `Could not create the counter: ${error.message}`;
+    }
+    state.page = "home";
+    state.mode = null;
+    state.draft = null;
+    await source.update(render());
+  };
+
+  const patchSelected = async (source, patch, message) => {
+    try {
+      const counter = counters.updateCounter(guild.id, state.selectedId, patch);
+      await counters.refreshGuildCounters(guild);
+      state.status = message ?? `Updated **${counter.label ?? counters.defaultLabel(counter, guild)}**.`;
+    } catch (error) {
+      state.status = `Could not update the counter: ${error.message}`;
+    }
+    state.page = state.mode === "add" ? "home" : "edit";
+    await source.update(render());
+  };
+
+  const askLabel = async source => {
+    const current = state.mode === "add"
+      ? (state.draft?.label ?? "")
+      : (currentCounter()?.label ?? "");
+    const customId = menuId("counter","label-modal", interaction.id);
+    const submitted = await showConfigModal(source, new discord.ModalBuilder()
+      .setCustomId(customId)
+      .setTitle("Counter name")
+      .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+        .setCustomId("label")
+        .setLabel("Name before the number")
+        .setStyle(discord.TextInputStyle.Short)
+        .setValue(current)
+        .setRequired(false)
+        .setMaxLength(80)
+      )), customId);
+    if (!submitted) {return;}
+    const label = submitted.fields.getTextInputValue("label").trim() || null;
+    if (state.mode === "add") {
+      state.draft.label = label;
+      await finishDraft(submitted);
+      return;
+    }
+    const counter = currentCounter();
+    await patchSelected(submitted, {label}, `Counter name set to **${label ?? counters.defaultLabel(counter, guild)}**.`);
+  };
+
+  const render = () => {
+    const prefix = state.status ? `${state.status}\n\n` : "";
+    const embed = new discord.EmbedBuilder().setTitle("BargazBot Counters").setTimestamp();
+    let rows = [];
+
+    if (state.page === "home") {
+      const list = counters.getCounters(guild.id);
+      embed.setDescription(prefix +
+        `${list.length} counter(s) configured. Counts refresh on join, leave, role changes, and every 24 hours.`);
+      if (list.length) {
+        rows.push(buildSelectRow(menuId("counter","select"), list.slice(0, 25).map(counter =>
+          menuOption(
+            counter.label ?? counters.defaultLabel(counter, guild),
+            counter.counterId,
+            `${counter.type} • <#${counter.channelId}>`
+          )
+        ), {placeholder:"Edit a counter"}));
+      }
+      rows.push(buildButtonRow([
+        {customId:menuId("counter","add"), label:"Add counter", style:"success"},
+        {customId:menuId("counter","refresh"), label:"Refresh now", style:"primary"}
+      ]));
+    } else if (state.page === "type") {
+      embed.setTitle("Counter type").setDescription(prefix + "Choose what this counter should count.");
+      rows = [buildSelectRow(menuId("counter","type"), COUNTER_TYPE_OPTIONS, {placeholder:"Count type"}), backButton()];
+    } else if (state.page === "role") {
+      const roles = matchingRoles(guild, state.roleQuery);
+      const pageCount = Math.max(1, Math.ceil(roles.length / 25));
+      state.rolePage = Math.min(state.rolePage, pageCount - 1);
+      embed.setTitle("Counter role")
+        .setDescription(prefix +
+          "Pick the role to count. Bots with the role are not counted.\n" +
+          (state.roleQuery ? `Search: **${state.roleQuery}**\n` : "") +
+          `Page ${state.rolePage + 1} of ${pageCount} — ${roles.length} role(s)`
+        );
+      const options = counterRoleOptions(guild, state.rolePage, state.roleQuery);
+      if (options.length) {rows.push(buildSelectRow(menuId("counter","role"), options, {placeholder:"Choose a role"}));}
+      rows.push(buildButtonRow([
+        {customId:menuId("counter","role-prev"), label:"Prev", style:"secondary", disabled:state.rolePage <= 0},
+        {customId:menuId("counter","role-next"), label:"Next", style:"secondary", disabled:state.rolePage >= pageCount - 1},
+        {customId:menuId("counter","role-search"), label:"Search", style:"primary"},
+        ...(state.roleQuery ? [{customId:menuId("counter","role-clear"), label:"Clear", style:"secondary"}] : [])
+      ]));
+      rows.push(backButton());
+    } else if (state.page === "label") {
+      embed.setTitle("Counter name").setDescription(prefix + "Choose the name shown before the number, or use the default.");
+      rows.push(buildButtonRow([
+        {customId:menuId("counter","label-set"), label:"Enter name", style:"primary"},
+        {customId:menuId("counter","label-default"), label:"Use default", style:"secondary"},
+        {customId:menuId("counter","back"), label:"Back", style:"secondary"}
+      ]));
+    } else if (state.page === "edit") {
+      const counter = currentCounter();
+      if (!counter) {
+        state.page = "home";
+        state.status = "That counter no longer exists.";
+        return render();
+      }
+      const role = counter.roleId ? guild.roles.cache.get(counter.roleId) : null;
+      embed.setTitle(counter.label ?? counters.defaultLabel(counter, guild))
+        .setDescription(prefix +
+          `${counter.type} • <#${counter.channelId}>\n` +
+          `Name: ${counter.label ?? counters.defaultLabel(counter, guild)}\n` +
+          `Role: ${role ? `@${role.name}` : "none"}`
+        );
+      rows = [
+        buildSelectRow(menuId("counter","edit-field"), [
+          menuOption("Change name", "label", "Customize the text before the count"),
+          menuOption("Change type", "type", "Accounts, bots, members, or role"),
+          menuOption("Change role", "role", "Pick another role"),
+          menuOption("Delete counter", "delete", "Remove this counter")
+        ], {placeholder:"Edit this counter"}),
+        backButton()
+      ];
+    }
+
+    return {embeds:[embed], components:rows, flags:discord.MessageFlags.Ephemeral};
+  };
+
+  await interaction.reply(render());
+  const message = await interaction.fetchReply();
+  const collector = createCommandCollector(message, {
+    filter:item => item.user.id === interaction.user.id && item.message?.id === message.id,
+    time:300000
+  });
+
+  onCommandComponent(collector, async component => {
+    const action = parseMenuId(component.customId)[1];
+    try {
+      if (action === "back") {
+        state.page = state.returnPage ?? (state.mode === "edit" ? "edit" : "home");
+        state.status = null;
+        await component.update(render());
+        return;
+      }
+
+      if (action === "done") {
+        collector.stop("done");
+        await component.update({content:"Counter menu closed.", embeds:[], components:[]});
+        return;
+      }
+
+      if (action === "add") {
+        state.mode = "add";
+        state.draft = {};
+        state.selectedId = null;
+        state.status = null;
+        state.page = "type";
+        state.returnPage = "home";
+        await component.update(render());
+        return;
+      }
+
+      if (action === "refresh") {
+        await counters.refreshGuildCounters(guild);
+        state.status = "Counters refreshed.";
+        state.page = "home";
+        await component.update(render());
+        return;
+      }
+
+      if (action === "select") {
+        state.mode = "edit";
+        state.selectedId = component.values?.[0];
+        state.status = null;
+        state.page = "edit";
+        state.returnPage = "edit";
+        await component.update(render());
+        return;
+      }
+
+      if (action === "edit-field") {
+        const field = component.values?.[0];
+        state.returnPage = "edit";
+        if (field === "delete") {
+          const counter = currentCounter();
+          await counters.deleteCounter(guild, state.selectedId);
+          await counters.refreshGuildCounters(guild);
+          state.status = `Deleted the **${counter?.label ?? counters.defaultLabel(counter, guild)}** counter.`;
+          state.page = "home";
+          state.selectedId = null;
+          await component.update(render());
+          return;
+        }
+        if (field === "role") {openRolePage("edit");}
+        else {state.page = field;}
+        await component.update(render());
+        return;
+      }
+
+      if (action === "type") {
+        const type = component.values?.[0];
+        if (state.mode === "add") {
+          state.draft.type = type;
+          if (type === "role") {openRolePage("type");}
+          else {state.page = "label"; state.returnPage = "type";}
+          await component.update(render());
+          return;
+        }
+        const counter = currentCounter();
+        if (type === "role" && !counter?.roleId) {
+          counters.updateCounter(guild.id, state.selectedId, {type});
+          openRolePage("type");
+          await component.update(render());
+          return;
+        }
+        await patchSelected(component, {type});
+        return;
+      }
+
+      if (action === "role-prev" || action === "role-next") {
+        state.rolePage = Math.max(0, state.rolePage + (action === "role-next" ? 1 : -1));
+        await component.update(render());
+        return;
+      }
+
+      if (action === "role-clear") {
+        state.roleQuery = "";
+        state.rolePage = 0;
+        await component.update(render());
+        return;
+      }
+
+      if (action === "role-search") {
+        const customId = menuId("counter","role-query", interaction.id);
+        const submitted = await showConfigModal(component, new discord.ModalBuilder()
+          .setCustomId(customId)
+          .setTitle("Find a role")
+          .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+            .setCustomId("query")
+            .setLabel("Role name (blank shows all)")
+            .setStyle(discord.TextInputStyle.Short)
+            .setValue(state.roleQuery)
+            .setRequired(false)
+            .setMaxLength(100)
+          )), customId);
+        if (!submitted) {return;}
+        state.roleQuery = submitted.fields.getTextInputValue("query").trim();
+        state.rolePage = 0;
+        await submitted.update(render());
+        return;
+      }
+
+      if (action === "role") {
+        const roleId = component.values?.[0];
+        if (state.mode === "add") {
+          state.draft.roleId = roleId;
+          state.page = "label";
+          state.returnPage = "role";
+          await component.update(render());
+          return;
+        }
+        await patchSelected(component, {roleId}, `Counter role set to <@&${roleId}>.`);
+        return;
+      }
+
+      if (action === "label-set") {
+        await askLabel(component);
+        return;
+      }
+
+      if (action === "label-default") {
+        if (state.mode === "add") {
+          state.draft.label = null;
+          await finishDraft(component);
+        } else {
+          const counter = currentCounter();
+          await patchSelected(component, {label:null}, `Counter name reset to **${counters.defaultLabel(counter, guild)}**.`);
+        }
+        return;
+      }
+
+      if (action === "label-modal") {
+        const label = component.fields?.getTextInputValue("label").trim() || null;
+        if (state.mode === "add") {
+          state.draft.label = label;
+          await finishDraft(component);
+        } else {
+          const counter = currentCounter();
+          await patchSelected(component, {label}, `Counter name set to **${label ?? counters.defaultLabel(counter, guild)}**.`);
+        }
+      }
+    } catch (error) {
+      log.error("Counter menu error:", error);
+      state.status = `Error: ${error.message}`;
+      state.page = "home";
+      await component.update(render()).catch(() => {});
+    }
   });
 }
 

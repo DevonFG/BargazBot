@@ -13,9 +13,10 @@ export const COMMAND_PERMISSIONS = {
   inactivity:        ["setup"],
   timers:            ["setup"],
   autopublish:       ["setup"],
+  counter:           ["setup"],
   permissions:       ["add", "edit", "remove", "list"]
 };
-export const PUBLIC_COMMANDS = ["ping", "help"];
+export const PUBLIC_COMMANDS = ["ping", "help", "invite"];
 const PUBLIC_SUBCOMMANDS = ["permissions.list"];
 
 // Prevents invalid permission types from being stored in a database

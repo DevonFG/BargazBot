@@ -1091,6 +1091,12 @@ function mapUserDmSettings(userId, row) {
   };
 }
 
+export function countDmEnabledUsers() {
+  return getDB().prepare(
+    "SELECT COUNT(*) AS total FROM user_dm_settings WHERE dms_enabled = 1"
+  ).get().total;
+}
+
 export function getUserDmSettings(userId) {
   const row = getDB().prepare(
     "SELECT * FROM user_dm_settings WHERE user_id = ?"

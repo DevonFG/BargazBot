@@ -170,12 +170,17 @@ export async function publishMessage(message, guildId) {
   if (!isAnnouncementChannel(message.channel)) {
     return {success: false, reason: "not-announcement-channel"};
   }
-  if (message.flags?.has?.(discord.MessageFlags.Crossposted) || message.crosspostable === false) {
+  if (message.flags?.has?.(discord.MessageFlags.Crossposted)) {
     return {success: false, reason: "already-published"};
   }
 
+  if (!message.crosspostable) {
+    log.warn("BargazBot autopublish skipped — bot needs View Channel, Send Messages, and Manage Messages:", resolvedGuildId, message.channelId, message.id);
+    return {success:false, reason:"not-crosspostable"};
+  }
+
   try {
-    await message.publish();
+    await message.crosspost();
     log.info("BargazBot autopublish succeeded:", resolvedGuildId, message.channelId, message.id);
     await logging.logAutomaticAction(message.guild, {
       title: "BargazBot Message Published",
@@ -245,6 +250,7 @@ async function handleMessageCreate(message) {
   if (!isAnnouncementChannel(message.channel)) {return;}
   if (!featureSettings.isFeatureEnabled(message.guild.id, "autopublish")) {return;}
   if (!shouldAutopublish(message.guild.id, message.channelId)) {return;}
+  log.info("BargazBot autopublish event:", message.guild.id, message.channelId, message.id);
   await publishMessage(message, message.guild.id);
 }
 

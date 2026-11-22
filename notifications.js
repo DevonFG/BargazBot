@@ -837,7 +837,7 @@ async function getExistingDiscordMessage(guild,storedMessage) {
 async function resolveNotificationChannel(guild,subscription) {
   let notificationChannel = null;
   if (subscription.discordChannelId) {notificationChannel = guild.channels.cache.get(subscription.discordChannelId) ?? await guild.channels.fetch(subscription.discordChannelId).catch(() => null);}
-  if (!notificationChannel || !notificationChannel.isTextBased()) {notificationChannel = await channelManager.ensureChannel(guild,"notifications");}
+  if (!notificationChannel || !notificationChannel.isTextBased()) {notificationChannel = await channelManager.getChannel(guild,"notifications");}
   if (!notificationChannel || !notificationChannel.isTextBased()) {return null;}
   return notificationChannel;
 }
@@ -983,15 +983,9 @@ async function handleGroupAnnouncement(client, guildId, group, subscription, con
   const recent = getGroupActivities(guildId, group.groupId, cutoff);
   const sameKindOnly = group.allowedKinds.length === 0;
 
-  let candidates = recent.filter(activity =>
+  const candidates = recent.filter(activity =>
     sameKindOnly ? activity.kind === kind : group.allowedKinds.includes(activity.kind)
   );
-
-  if (!group.allowMultiplePerChannel) {
-    candidates = candidates.filter(activity =>
-      !(activity.platform === content.platform && String(activity.channelId) === String(content.channelId))
-    );
-  }
 
   const batchKey = candidates[0]?.batchKey ?? String(now);
   const data = {
@@ -1017,8 +1011,18 @@ async function handleGroupAnnouncement(client, guildId, group, subscription, con
     seenAt: now
   });
 
-  const activities = getGroupActivities(guildId, group.groupId, cutoff)
+  let activities = getGroupActivities(guildId, group.groupId, cutoff)
     .filter(activity => activity.batchKey === batchKey);
+
+  if (!group.allowMultiplePerChannel) {
+    const seen = new Set();
+    activities = [...activities].reverse().filter(activity => {
+      const key = `${activity.platform}:${activity.channelId}`;
+      if (seen.has(key)) {return false;}
+      seen.add(key);
+      return true;
+    }).reverse();
+  }
 
   const guild = await getGuild(client, guildId);
   if (!guild) {return null;}
@@ -1168,7 +1172,7 @@ export function getTestTargets(guildId) {
 async function resolveTestChannel(guild, discordChannelId = null) {
   let channel = null;
   if (discordChannelId) {channel = guild.channels.cache.get(discordChannelId) ?? await guild.channels.fetch(discordChannelId).catch(() => null);}
-  if (!channel || !channel.isTextBased()) {channel = await channelManager.ensureChannel(guild,"notifications");}
+  if (!channel || !channel.isTextBased()) {channel = await channelManager.getChannel(guild,"notifications");}
   return channel?.isTextBased() ? channel : null;
 }
 
