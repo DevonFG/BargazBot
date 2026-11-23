@@ -2807,6 +2807,9 @@ async function handleNotification(interaction) {
     status:      null,
     action:      null,
     list:        [],
+    listPage:    0,
+    listQuery:   "",
+    listPlatform:"all",
     selection:   null,
     backPage:    "home",
     pendingAdd:  {},
@@ -2862,6 +2865,20 @@ function notificationChannelOptions(guild) {
   ];
 }
 
+function filteredNotificationList(state) {
+  const needle = (state.listQuery ?? "").trim().toLowerCase();
+  const platform = state.listPlatform ?? "all";
+  return state.list
+    .map((subscription, index) => ({subscription, index}))
+    .filter(({subscription}) =>
+      (platform === "all" || subscription.platform === platform) &&
+      (!needle ||
+        String(subscription.nickname ?? "").toLowerCase().includes(needle) ||
+        String(subscription.channelName ?? "").toLowerCase().includes(needle) ||
+        String(subscription.channelId ?? "").toLowerCase().includes(needle)
+      )
+    );
+}
 
 // Renders the current page of the notification menu
 function renderNotificationMenu(interaction, state) {
@@ -2897,15 +2914,40 @@ function renderNotificationMenu(interaction, state) {
     }
 
     case "pick": {
-      embed.setDescription("Choose a creator notification:");
-      rows = [
-        buildSelectRow(menuId("notification", "pick"), state.list.map((subscription, index) => menuOption(
+      const entries = filteredNotificationList(state);
+      const pageCount = Math.max(1, Math.ceil(entries.length / 25));
+      state.listPage = Math.min(state.listPage, pageCount - 1);
+      const visible = entries.slice(state.listPage * 25, state.listPage * 25 + 25);
+
+      embed.setDescription(
+        (state.status ? `${state.status}\n\n` : "") +
+        "Choose a creator notification:\n" +
+        `${state.listQuery ? `Search: **${state.listQuery}**\n` : ""}` +
+        `${state.listPlatform !== "all" ? `Platform: **${state.listPlatform}**\n` : ""}` +
+        `Page ${state.listPage + 1} of ${pageCount} — ${entries.length} match(es)`
+      );
+
+      rows = [];
+      if (visible.length) {
+        rows.push(buildSelectRow(menuId("notification", "pick"), visible.map(({subscription, index}) => menuOption(
           `${subscription.nickname} — ${notifications.getPlatformName(subscription.platform)}`,
           String(index),
           subscription.channelName
-        )), {placeholder:"Choose a creator"}),
-        buildButtonRow([{customId:menuId("notification","back"),label:"Back",style:"secondary"}])
-      ];
+        )), {placeholder:"Choose a creator"}));
+      }
+      rows.push(buildSelectRow(menuId("notification", "pick-platform"), [
+        menuOption("All platforms", "all"),
+        menuOption("YouTube", "youtube"),
+        menuOption("Twitch", "twitch"),
+        menuOption("Kick", "kick")
+      ], {placeholder:"Filter by platform"}));
+      rows.push(buildButtonRow([
+        {customId:menuId("notification", "pick-prev"), label:"Prev", style:"secondary", disabled:state.listPage <= 0},
+        {customId:menuId("notification", "pick-next"), label:"Next", style:"secondary", disabled:state.listPage >= pageCount - 1},
+        {customId:menuId("notification", "pick-search"), label:"Search", style:"primary"},
+        {customId:menuId("notification", "pick-clear"), label:"Clear", style:"secondary"}
+      ]));
+      rows.push(buildButtonRow([{customId:menuId("notification","back"),label:"Back",style:"secondary"}]));
       break;
     }
 
@@ -3463,12 +3505,63 @@ async function handleNotificationComponent(component, interaction, state, collec
     } else if (["edit","delete","refresh"].includes(choice) && state.canUse(choice)) {
       state.action = choice;
       state.list = notifications.getGuildSubscriptions(guild.id);
+      state.listPage = 0;
+      state.listQuery = "";
+      state.listPlatform = "all";
       state.backPage = "home";
       state.page = state.list.length ? "pick" : "home";
       if (!state.list.length) {state.status = "No creator notifications are configured.";}
     }
 
     await refresh();
+    return;
+  }
+
+  if (page === "pick-prev" || page === "pick-next") {
+    const entries = filteredNotificationList(state);
+    const pageCount = Math.max(1, Math.ceil(entries.length / 25));
+    state.listPage = Math.max(0, Math.min(pageCount - 1, state.listPage + (page === "pick-next" ? 1 : -1)));
+    state.status = null;
+    await refresh();
+    return;
+  }
+
+  if (page === "pick-clear") {
+    state.listPage = 0;
+    state.listQuery = "";
+    state.listPlatform = "all";
+    state.status = null;
+    await refresh();
+    return;
+  }
+
+  if (page === "pick-platform") {
+    state.listPlatform = component.values?.[0] ?? "all";
+    state.listPage = 0;
+    state.status = null;
+    await refresh();
+    return;
+  }
+
+  if (page === "pick-search") {
+    const customId = menuId("notification","pick","query");
+    const submitted = await showNotificationModal(component, new discord.ModalBuilder()
+      .setCustomId(customId)
+      .setTitle("Filter creators")
+      .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
+        .setCustomId("query")
+        .setLabel("Nickname, channel name, or channel ID")
+        .setStyle(discord.TextInputStyle.Short)
+        .setValue(state.listQuery)
+        .setRequired(false)
+        .setMaxLength(100)
+      )), customId);
+    if (!submitted) {return;}
+    state.listQuery = submitted.fields.getTextInputValue("query").trim();
+    state.listPage = 0;
+    state.status = null;
+    await submitted.reply({content:`Filter set to **${state.listQuery || "all creators"}**.`, flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+    await interaction.editReply(renderNotificationMenu(interaction, state)).catch(() => {});
     return;
   }
 

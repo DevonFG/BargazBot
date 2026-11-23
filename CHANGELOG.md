@@ -19,6 +19,15 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.12.0-beta.1 - Nov 22
+- Added guildLogger.js with twenty log categories, forced-on rules while logs is enabled, bulk On/Off controls for enabled and all categories, and a logging-config sanitizer.
+- Added command log sessions that edit one message as buttons, selects, and modals are used, plus public slash-response logging for other bots.
+- Added log-channel send failure handling that creates a replacement logging channel only when one was configured.
+- Expanded storage.js with feature config tables for reaction roles, tickets, navigation, auto-mod, account linking, and role rewards, plus new feature toggles and defaults.
+- Added feature config get/set/patch helpers in storage.js and updateFeatureConfig() in featureSettings.js.
+- Updated permissions.js with command entries for the new features and changed /logging to a single setup permission.
+- Added ensureLogChannel() and the tickets channel purpose in channelManager.js, with tickets_channel_id in guild_settings.
+
 ## v26.11.0 - Nov 22
 - Created /invite command with menu to select what features you wan to use to give the correct permissions needed
 - Added counters with a /counter command that can create locked voice channels that count the number of people, bots, accounts, or people part of a role in a server

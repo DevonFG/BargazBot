@@ -208,7 +208,7 @@ async function checkYouTube() {
   const results = [];
 
   for (const channel of channels) {
-    if (stopping || isShutdownrequested()) {break;}
+    if (stopping || isShutdownRequested()) {break;}
     try {
       const channelResults =
         await youtube.checkChannel(

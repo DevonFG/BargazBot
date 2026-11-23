@@ -1,5 +1,4 @@
 import * as discord from "discord.js";
-
 import * as log     from "./appLogger.js";
 import * as storage from "./storage.js";
 
@@ -26,7 +25,10 @@ const {
   removeUserDmSubscription,
   emptyUserDmConfig,
   getUserDmConfig,
-  setUserDmConfig
+  setUserDmConfig,
+  getFeatureConfig,
+  setFeatureConfig,
+  patchFeatureConfig
 } = storage;
 
 export {
@@ -50,7 +52,10 @@ export {
   isGuildSetupComplete,
   markGuildSetupComplete,
   countDmEnabledUsers,
-  resetGuildSetup
+  resetGuildSetup,
+  getFeatureConfig,
+  setFeatureConfig,
+  patchFeatureConfig
 } from "./storage.js";
 
 const RESPONSE_ALIASES        = {test:"notifications"};
@@ -60,6 +65,12 @@ const FIXED_MESSAGE_FEATURES  = new Set(["logs", "inactivity"]);
 function responseKey(feature) {return RESPONSE_ALIASES[feature] ?? feature;}
 function logChange(target, action, detail = "") {
   log.info("BargazBot config change:", action, "target:", target ?? "dm", detail);
+}
+
+export function updateFeatureConfig(guildId, feature, patch, actorId = null, fallback = {}) {
+  const result = patchFeatureConfig(guildId, feature, patch, fallback);
+  logChange(guildId, `feature config ${feature}`, `by=${actorId ?? "unknown"}`);
+  return result;
 }
 
 // Feature state

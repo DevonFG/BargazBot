@@ -77,6 +77,7 @@ export function initDB() {
       goodbye_message TEXT,
       notice_channel_id TEXT,
       timezone TEXT,
+      tickers_channel_id TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
@@ -550,6 +551,170 @@ export function initDB() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (guild_id, channel_id),
       FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS feature_configs (
+      guild_id TEXT NOT NULL,
+      feature TEXT NOT NULL,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, feature),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS reaction_role_messages (
+      guild_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      style TEXT NOT NULL DEFAULT 'reactions',
+      wrap_code INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, message_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS reaction_role_options (
+      guild_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      option_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      emoji TEXT,
+      role_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, message_id, option_id),
+      FOREIGN KEY (guild_id, message_id) REFERENCES reaction_role_messages(guild_id, message_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS ticket_panels (
+      guild_id TEXT NOT NULL,
+      panel_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      message_id TEXT,
+      title TEXT NOT NULL DEFAULT 'Support tickets',
+      description TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, panel_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS ticket_types (
+      guild_id TEXT NOT NULL,
+      panel_id TEXT NOT NULL,
+      type_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      name_template TEXT NOT NULL DEFAULT '{user}-{count}',
+      container_type TEXT NOT NULL DEFAULT 'thread',
+      category_id TEXT,
+      emoji TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, panel_id, type_id),
+      FOREIGN KEY (guild_id, panel_id) REFERENCES ticket_panels(guild_id, panel_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS ticket_access (
+      guild_id TEXT NOT NULL,
+      panel_id TEXT NOT NULL,
+      type_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      group_id TEXT,
+      PRIMARY KEY (guild_id, panel_id, type_id, action, target_type, target_id));
+    CREATE TABLE IF NOT EXISTS tickets (
+      guild_id TEXT NOT NULL,
+      ticket_id TEXT NOT NULL,
+      panel_id TEXT NOT NULL,
+      type_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      closed_at TEXT,
+      PRIMARY KEY (guild_id, ticket_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS navigation_messages (
+      guild_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT 'Server navigation',
+      description TEXT,
+      auto_update INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, message_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS navigation_categories (
+      guild_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (guild_id, message_id, category_id),
+      FOREIGN KEY (guild_id, message_id) REFERENCES navigation_messages(guild_id, message_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS navigation_channels (
+      guild_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      description_override TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (guild_id, message_id, channel_id),
+      FOREIGN KEY (guild_id, message_id) REFERENCES navigation_messages(guild_id, message_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS automod_rules (
+      guild_id TEXT NOT NULL,
+      rule_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      settings_json TEXT NOT NULL DEFAULT '{}',
+      actions_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, rule_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS automod_scope (
+      guild_id TEXT NOT NULL,
+      rule_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      PRIMARY KEY (guild_id, rule_id, scope_type, target_id),
+      FOREIGN KEY (guild_id, rule_id) REFERENCES automod_rules(guild_id, rule_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS automod_warnings (
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      last_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, user_id));
+    CREATE TABLE IF NOT EXISTS account_links (
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      provider_account_id TEXT NOT NULL,
+      username TEXT,
+      access_token TEXT,
+      refresh_token TEXT,
+      expires_at TEXT,
+      linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, user_id, platform),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS role_reward_rules (
+      guild_id TEXT NOT NULL,
+      reward_id TEXT NOT NULL,
+      trigger_type TEXT NOT NULL,
+      platform TEXT,
+      provider_account_id TEXT,
+      metric TEXT,
+      threshold INTEGER,
+      role_id TEXT NOT NULL,
+      auto_remove INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, reward_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS role_reward_grants (
+      guild_id TEXT NOT NULL,
+      reward_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      auto_added INTEGER NOT NULL DEFAULT 1,
+      granted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, reward_id, user_id),
+      FOREIGN KEY (guild_id, reward_id) REFERENCES role_reward_rules(guild_id, reward_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS webhook_events (
+      provider TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (provider, event_id));
   `);
 
   db.exec(`
@@ -749,7 +914,16 @@ export const FEATURE_KEYS = [
   "birthdays",
   "autopublish",
   "feedback",
-  "dm"
+  "dm",
+  "counters",
+  "reaction-roles",
+  "verification",
+  "tickets",
+  "navigation",
+  "auto-mod",
+  "social-counters",
+  "role-rewards",
+  "account-linking"
 ];
 
 export const FEATURE_DEFAULTS = {
@@ -765,7 +939,16 @@ export const FEATURE_DEFAULTS = {
   birthdays:     {enabled: false, responseType: null},
   autopublish:   {enabled: false, responseType: null},
   feedback:      {enabled: false, responseType: null},
-  dm:            {enabled: false, responseType: null}
+  dm:            {enabled: false, responseType: null},
+  counters:        {enabled: false, responseType: null},
+  "reaction-roles":{enabled: false, responseType: null},
+  verification:    {enabled: false, responseType: null},
+  tickets:         {enabled: false, responseType: null},
+  navigation:      {enabled: false, responseType: null},
+  "auto-mod":      {enabled: false, responseType: null},
+  "social-counters":{enabled: false, responseType: null},
+  "role-rewards":  {enabled: false, responseType: null},
+  "account-linking":{enabled: false, responseType: null}
 };
 
 function canonicalFeature(feature) {
@@ -848,6 +1031,32 @@ export function setFeatureSetting(guildId, feature, patch = {}) {
   }
 
   return getFeatureSetting(guildId, key);
+}
+
+export function getFeatureConfig(guildId, feature, fallback = {}) {
+  const row = getDB().prepare(
+    "SELECT config_json FROM feature_configs WHERE guild_id = ? AND feature = ?"
+  ).get(guildId, feature);
+  if (!row) {return structuredClone(fallback);}
+  try {return {...structuredClone(fallback), ...JSON.parse(row.config_json)};}
+  catch {return structuredClone(fallback);}
+}
+
+export function setFeatureConfig(guildId, feature, config = {}) {
+  ensureGuildRow(guildId);
+  getDB().prepare(`
+    INSERT INTO feature_configs (guild_id, feature, config_json, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(guild_id, feature) DO UPDATE SET
+      config_json = excluded.config_json,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(guildId, feature, JSON.stringify(config ?? {}));
+  return config;
+}
+
+export function patchFeatureConfig(guildId, feature, patch = {}, fallback = {}) {
+  const merged = {...getFeatureConfig(guildId, feature, fallback), ...patch};
+  return setFeatureConfig(guildId, feature, merged);
 }
 
 export function setAllFeatureResponseTypes(guildId, responseType) {

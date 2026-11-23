@@ -14,7 +14,8 @@ const CHANNEL_COLUMNS = {
   goodbye:       "goodbye_channel_id",
   logs:          "logs_channel_id",
   updates:       "updates_channel_id",
-  status:        "status_channel_id"
+  status:        "status_channel_id",
+  tickets:       "tickets_channel_id"
 };
 
 const CHANNEL_COLUMN_NAMES = Object.values(CHANNEL_COLUMNS);
@@ -32,6 +33,27 @@ function isUsableTextChannel(channel) {
     channel.isTextBased() &&
     !channel.isThread()
   );
+}
+
+export async function ensureLogChannel(guild) {
+  const existing = await getChannel(guild, "logs");
+  if (existing) {return existing;}
+  const created = await guild.channels.create({
+    name: "bargaz-logs",
+    type: discord.ChannelType.GuildText,
+    reason: "BargazBot log channel setup",
+    permissionOverwrites: [
+      {id: guild.roles.everyone.id, deny: [discord.PermissionFlagsBits.ViewChannel]},
+      {id: guild.client.user.id, allow: [
+        discord.PermissionFlagsBits.ViewChannel,
+        discord.PermissionFlagsBits.SendMessages,
+        discord.PermissionFlagsBits.EmbedLinks,
+        discord.PermissionFlagsBits.ReadMessageHistory
+      ]}
+    ]
+  });
+  setChannel(guild.id, "logs", created.id);
+  return created;
 }
 
 /*
