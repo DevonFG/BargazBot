@@ -525,7 +525,11 @@ export async function logCommand(interaction, {successful = true, details = null
 }
 
 export async function logConfigurationChange(guild, payload = {}) {
-  return logGuildEvent(guild, {...payload, category:"configuration"});
+  return logGuildEvent(guild, {
+    category:"configuration",
+    title: payload.title || "BargazBot configuration changed",
+    ...payload
+  });
 }
 
 export async function logPermissionChange(guild, payload = {}) {

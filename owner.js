@@ -18,7 +18,8 @@ const OWNER_CHANNELS = {
   status: "OWNER_STATUS_CHANNEL",
   updates: "OWNER_UPDATES_CHANNEL",
   console: "OWNER_CONSOLE_CHANNEL",
-  errors: "OWNER_ERRORS_CHANNEL"
+  errors: "OWNER_ERRORS_CHANNEL",
+  alerts: "OWNER_ALERTS_CHANNEL"
 };
 
 /*
@@ -204,6 +205,56 @@ async function broadcastOwnerUpdate(sourceMessage) {
 
   appLogger.info("BargazBot owner update broadcast completed:", {sent: sentCount, failed: failedCount, skipped: skippedCount});
   return {sent: sentCount, failed: failedCount, skipped: skippedCount};
+}
+
+/*
+=====================================================
+Owner Alerts
+=====================================================
+*/
+
+export async function getOwnerAlertsChannel() {
+  return await getOwnerChannel("alerts");
+}
+
+export async function sendOwnerAlert(content, embed = null) {
+  const channel = await getOwnerAlertsChannel();
+  if (!channel) {return false;}
+  const payload = embed ? {embeds:[embed], allowedMentions:{parse:[]}} : {content:String(content).slice(0, 1900), allowedMentions:{parse:[]}};
+  try { await channel.send(payload); return true; }
+  catch (error) { appLogger.warn("Failed to send BargazBot owner alert:", error); return false; }
+}
+
+export async function broadcastAlert(client, {title, description, fields = [], color = 0xED4245} = {}) {
+  const embed = new discord.EmbedBuilder()
+    .setTitle(title || "BargazBot Alert")
+    .setDescription(String(description || "BargazBot alert").slice(0, 4096))
+    .setColor(color)
+    .setTimestamp();
+  if (fields.length) {embed.addFields(fields.slice(0, 25));}
+
+  await sendOwnerAlert(null, embed);
+
+  if (!client) {return {sent:0, failed:0, skipped:0};}
+  let sent = 0, failed = 0, skipped = 0;
+  for (const guild of client.guilds.cache.values()) {
+    if (guild.id === EnvVar.OWNER_SERVER_ID) {continue;}
+    channelManager.ensureGuildData(guild);
+    if (!featureSettings.isFeatureEnabled(guild.id, "alerts")) {skipped++; continue;}
+    try {
+      const channel = await channelManager.getChannel(guild, "alerts");
+      if (!channel?.isTextBased() || channel.isThread()) {skipped++; continue;}
+      await Promise.race([
+        channel.send({embeds:[embed], allowedMentions:{parse:[]}}),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("alert send timeout")), 5000))
+      ]);
+      sent++;
+    } catch (error) {
+      failed++;
+      appLogger.warn("Failed to send guild alert:", guild.id, guild.name, error?.message ?? error);
+    }
+  }
+  return {sent, failed, skipped};
 }
 
 /*

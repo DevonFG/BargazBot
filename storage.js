@@ -70,6 +70,7 @@ export function initDB() {
       logs_channel_id TEXT,
       updates_channel_id TEXT,
       status_channel_id TEXT,
+      alerts_channel_id TEXT,
       notification_dedupe_hours INTEGER NOT NULL DEFAULT 24,
       setup_complete INTEGER NOT NULL DEFAULT 0,
       installer_user_id TEXT,
@@ -612,6 +613,42 @@ export function initDB() {
       target_id TEXT NOT NULL,
       group_id TEXT,
       PRIMARY KEY (guild_id, panel_id, type_id, action, target_type, target_id));
+    CREATE TABLE IF NOT EXISTS ticket_form_questions (
+      guild_id TEXT NOT NULL,
+      panel_id TEXT NOT NULL,
+      type_id TEXT NOT NULL,
+      question_id TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      label TEXT NOT NULL,
+      placeholder TEXT,
+      kind TEXT NOT NULL DEFAULT 'short',
+      required INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, panel_id, type_id, question_id),
+      FOREIGN KEY (guild_id, panel_id, type_id) REFERENCES ticket_types(guild_id, panel_id, type_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS ticket_form_routes (
+      guild_id TEXT NOT NULL,
+      panel_id TEXT NOT NULL,
+      type_id TEXT NOT NULL,
+      route_id TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      conditions_json TEXT NOT NULL DEFAULT '[]',
+      target_kind TEXT NOT NULL DEFAULT 'default',
+      target_channel_id TEXT,
+      target_category_id TEXT,
+      thread_name_template TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, panel_id, type_id, route_id),
+      FOREIGN KEY (guild_id, panel_id, type_id) REFERENCES ticket_types(guild_id, panel_id, type_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS ticket_form_answers (
+      guild_id TEXT NOT NULL,
+      ticket_id TEXT NOT NULL,
+      question_id TEXT NOT NULL,
+      question_label TEXT NOT NULL,
+      answer TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (guild_id, ticket_id, question_id),
+      FOREIGN KEY (guild_id, ticket_id) REFERENCES tickets(guild_id, ticket_id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS tickets (
       guild_id TEXT NOT NULL,
       ticket_id TEXT NOT NULL,
@@ -804,6 +841,7 @@ export function initDB() {
   addColumnIfMissing("guild_settings", "timezone", "TEXT");
   addColumnIfMissing("guild_settings", "tickets_channel_id", "TEXT");
   addColumnIfMissing("guild_settings", "bot_detection_channel_id", "TEXT");
+  addColumnIfMissing("guild_settings", "alerts_channel_id", "TEXT");
   addColumnIfMissing("guild_counters", "metric", "TEXT");
   addColumnIfMissing("guild_counters", "source", "TEXT NOT NULL DEFAULT 'guild'");
   addColumnIfMissing("guild_counters", "platform", "TEXT");
@@ -943,6 +981,7 @@ export const FEATURE_KEYS = [
   "logs",
   "updates",
   "status",
+  "alerts",
   "entitlement",
   "inactivity",
   "timers",
@@ -968,6 +1007,7 @@ export const FEATURE_DEFAULTS = {
   logs:          {enabled: true,  responseType: "message"},
   updates:       {enabled: true,  responseType: null},
   status:        {enabled: true,  responseType: null},
+  alerts:        {enabled: true,  responseType: null},
   entitlement:   {enabled: false, responseType: null},
   inactivity:    {enabled: false, responseType: "message"},
   timers:        {enabled: false, responseType: null},
@@ -1296,6 +1336,7 @@ export function resetGuildSetup(guildId) {
         logs_channel_id = NULL,
         updates_channel_id = NULL,
         status_channel_id = NULL,
+        alerts_channel_id = NULL,
         notice_channel_id = NULL,
         welcome_message = NULL,
         goodbye_message = NULL,

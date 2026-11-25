@@ -17,25 +17,37 @@ export function getPanel(guildId, panelId) {
 
 export function listPanels(guildId) {
   return getDB().prepare(
-    "SELECT * FROM ticket_panels WHERE guild_id = ? ORDER BY created_at ASC"
+    "SELECT * FROM ticket_panels WHERE guild_id = ? AND message_id IS NOT NULL AND message_id != '' ORDER BY created_at ASC"
   ).all(guildId);
 }
 
 export async function createPanel(guild, options = {}) {
   ensureGuild(guild.id);
   const panelId = options.panelId ?? newId("panel");
-  const channel = await channelManager.getChannel(guild, "tickets") ?? await channelManager.ensureChannel(guild, "tickets");
+  const channelId = options.channelId ?? null;
+  const channel = channelId
+    ? (guild.channels.cache.get(channelId) ?? await guild.channels.fetch(channelId).catch(() => null))
+    : null;
+  if (!channel?.isTextBased?.() || channel.isThread?.()) {
+    throw new Error("Choose a channel where I can post the ticket panel.");
+  }
+
   getDB().prepare(`
     INSERT INTO ticket_panels (guild_id, panel_id, channel_id, title, description)
     VALUES (?, ?, ?, ?, ?)
   `).run(guild.id, panelId, channel.id, String(options.title ?? "Support tickets").slice(0, 256), options.description ?? null);
 
   const payload = buildPanelPayload(guild.id, panelId);
-  const message = await channel.send(payload).catch(() => null);
-  if (message) {
-    getDB().prepare("UPDATE ticket_panels SET message_id = ?, updated_at = CURRENT_TIMESTAMP WHERE guild_id = ? AND panel_id = ?")
-      .run(message.id, guild.id, panelId);
+  let message = null;
+  try {
+    message = await channel.send(payload);
+  } catch (error) {
+    getDB().prepare("DELETE FROM ticket_panels WHERE guild_id = ? AND panel_id = ?").run(guild.id, panelId);
+    throw error;
   }
+
+  getDB().prepare("UPDATE ticket_panels SET message_id = ?, updated_at = CURRENT_TIMESTAMP WHERE guild_id = ? AND panel_id = ?")
+    .run(message.id, guild.id, panelId);
   return getPanel(guild.id, panelId);
 }
 
@@ -129,6 +141,76 @@ export function listTicketAccess(guildId, panelId, typeId) {
   ).all(guildId, panelId, typeId);
 }
 
+export function listTicketFormQuestions(guildId, panelId, typeId) {
+  return getDB().prepare(
+    "SELECT * FROM ticket_form_questions WHERE guild_id = ? AND panel_id = ? AND type_id = ? ORDER BY position ASC, created_at ASC"
+  ).all(guildId, panelId, typeId);
+}
+
+export function addTicketFormQuestion(guildId, panelId, typeId, patch = {}) {
+  const questionId = patch.questionId ?? newId("q");
+  const count = getDB().prepare("SELECT COUNT(*) AS c FROM ticket_form_questions WHERE guild_id = ? AND panel_id = ? AND type_id = ?").get(guildId, panelId, typeId)?.c ?? 0;
+  getDB().prepare(`
+    INSERT INTO ticket_form_questions (guild_id, panel_id, type_id, question_id, position, label, placeholder, kind, required)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(guildId, panelId, typeId, questionId, Number(patch.position ?? count), String(patch.label ?? "Question").slice(0, 45), patch.placeholder ? String(patch.placeholder).slice(0, 100) : null, ["short","paragraph"].includes(patch.kind) ? patch.kind : "short", patch.required === false ? 0 : 1);
+  return questionId;
+}
+
+export function deleteTicketFormQuestion(guildId, panelId, typeId, questionId) {
+  return getDB().prepare("DELETE FROM ticket_form_questions WHERE guild_id = ? AND panel_id = ? AND type_id = ? AND question_id = ?").run(guildId, panelId, typeId, questionId);
+}
+
+export function clearTicketFormQuestions(guildId, panelId, typeId) {
+  getDB().prepare("DELETE FROM ticket_form_questions WHERE guild_id = ? AND panel_id = ? AND type_id = ?").run(guildId, panelId, typeId);
+}
+
+export function listTicketFormRoutes(guildId, panelId, typeId) {
+  return getDB().prepare(
+    "SELECT * FROM ticket_form_routes WHERE guild_id = ? AND panel_id = ? AND type_id = ? ORDER BY position ASC, created_at ASC"
+  ).all(guildId, panelId, typeId).map(row => ({...row, conditions: safeJson(row.conditions_json, [])}));
+}
+
+function safeJson(value, fallback) { try { return JSON.parse(value ?? ""); } catch { return fallback; } }
+
+export function addTicketFormRoute(guildId, panelId, typeId, patch = {}) {
+  const routeId = patch.routeId ?? newId("route");
+  const count = getDB().prepare("SELECT COUNT(*) AS c FROM ticket_form_routes WHERE guild_id = ? AND panel_id = ? AND type_id = ?").get(guildId, panelId, typeId)?.c ?? 0;
+  getDB().prepare(`
+    INSERT INTO ticket_form_routes (guild_id, panel_id, type_id, route_id, position, conditions_json, target_kind, target_channel_id, target_category_id, thread_name_template)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(guildId, panelId, typeId, routeId, Number(patch.position ?? count), JSON.stringify(Array.isArray(patch.conditions) ? patch.conditions : []), patch.targetKind ?? "default", patch.targetChannelId ?? null, patch.targetCategoryId ?? null, patch.threadNameTemplate ?? null);
+  return routeId;
+}
+
+export function deleteTicketFormRoute(guildId, panelId, typeId, routeId) {
+  return getDB().prepare("DELETE FROM ticket_form_routes WHERE guild_id = ? AND panel_id = ? AND type_id = ? AND route_id = ?").run(guildId, panelId, typeId, routeId);
+}
+
+export function saveTicketFormAnswers(guildId, ticketId, answers = []) {
+  const db = getDB();
+  const stmt = db.prepare("INSERT OR REPLACE INTO ticket_form_answers (guild_id, ticket_id, question_id, question_label, answer, position) VALUES (?, ?, ?, ?, ?, ?)");
+  for (let i = 0; i < answers.length; i++) {
+    const a = answers[i];
+    stmt.run(guildId, ticketId, String(a.questionId), String(a.label ?? "Question").slice(0, 100), a.answer == null ? null : String(a.answer).slice(0, 1000), i);
+  }
+}
+
+export function listTicketFormAnswers(guildId, ticketId) {
+  return getDB().prepare("SELECT * FROM ticket_form_answers WHERE guild_id = ? AND ticket_id = ? ORDER BY position ASC").all(guildId, ticketId);
+}
+
+export function evaluateTicketFormRoute(guildId, panelId, typeId, answers = []) {
+  const routes = listTicketFormRoutes(guildId, panelId, typeId);
+  const byId = new Map(answers.map(a => [String(a.questionId), String(a.answer ?? "").trim().toLowerCase()]));
+  for (const route of routes) {
+    const conditions = Array.isArray(route.conditions) ? route.conditions : [];
+    const ok = conditions.every(c => byId.get(String(c.questionId)) === String(c.value ?? "").trim().toLowerCase());
+    if (ok) {return route;}
+  }
+  return null;
+}
+
 export function buildPanelPayload(guildId, panelId) {
   const panel = getPanel(guildId, panelId);
   if (!panel) {return null;}
@@ -178,7 +260,7 @@ function ticketPermissions(action) {
   return {ViewChannel:true, SendMessages:true, ReadMessageHistory:true};
 }
 
-export async function openTicket(client, interaction, panelId, typeId) {
+export async function openTicket(client, interaction, panelId, typeId, form = {}) {
   const guild = interaction.guild;
   const panel = getPanel(guild.id, panelId);
   const type = getTicketType(guild.id, panelId, typeId);
@@ -286,35 +368,106 @@ export function getTicket(guildId, ticketId) {
   return getDB().prepare("SELECT * FROM tickets WHERE guild_id = ? AND ticket_id = ?").get(guildId, ticketId) ?? null;
 }
 
+const ticketFormDrafts = new Map(); // key -> {guildId,panelId,typeId,userId,answers,index,expiresAt}
+function draftKey(guildId, userId, panelId, typeId) {return `${guildId}:${userId}:${panelId}:${typeId}`;}
+function getDraft(guildId, userId, panelId, typeId) {
+  const key = draftKey(guildId, userId, panelId, typeId);
+  const draft = ticketFormDrafts.get(key);
+  if (draft && draft.expiresAt < Date.now()) {ticketFormDrafts.delete(key); return null;}
+  return draft ?? null;
+}
+function setDraft(draft) {ticketFormDrafts.set(draftKey(draft.guildId, draft.userId, draft.panelId, draft.typeId), draft);}
+
+function buildTicketFormModal(panelId, typeId, questions, startIndex) {
+  const slice = questions.slice(startIndex, startIndex + 5);
+  const modal = new discord.ModalBuilder()
+    .setCustomId(`ticket:form:${panelId}:${typeId}:${startIndex}`)
+    .setTitle(slice.length < questions.length ? `Ticket form (${startIndex + 1}-${startIndex + slice.length})` : "Ticket form");
+  for (const q of slice) {
+    modal.addComponents(new discord.ActionRowBuilder().addComponents(
+      new discord.TextInputBuilder()
+        .setCustomId(`q:${q.question_id}`)
+        .setLabel(String(q.label).slice(0, 45))
+        .setStyle(q.kind === "paragraph" ? discord.TextInputStyle.Paragraph : discord.TextInputStyle.Short)
+        .setRequired(q.required === 1)
+        .setMaxLength(q.kind === "paragraph" ? 1000 : 100)
+        .setPlaceholder(String(q.placeholder ?? "Answer here").slice(0, 100))
+    ));
+  }
+  return {modal, slice};
+}
+
+async function startTicketForm(interaction, panelId, typeId) {
+  const questions = listTicketFormQuestions(interaction.guild.id, panelId, typeId);
+  if (!questions.length) {return {started:false};}
+  const draft = {guildId:interaction.guild.id, panelId, typeId, userId:interaction.user.id, answers:[], index:0, expiresAt:Date.now() + 14 * 60 * 1000};
+  setDraft(draft);
+  const {modal} = buildTicketFormModal(panelId, typeId, questions, 0);
+  await interaction.showModal(modal);
+  return {started:true, questions:questions.length};
+}
+
 export async function handleComponent(interaction) {
   const customId = interaction.customId ?? "";
   if (!customId.startsWith("ticket:")) {return false;}
   if (!interaction.guild) {return false;}
 
   if (customId === "ticket:none") {
-    await interaction.reply({content:"This panel has no ticket types yet.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+    await interaction.reply({content:"This panel has no ticket types yet. A server admin needs to add a ticket type in /tickets.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
     return true;
+  }
+
+  if (interaction.isModalSubmit() && customId.startsWith("ticket:form:")) {
+    const [, , panelId, typeId, startRaw] = customId.split(":");
+    const startIndex = Number(startRaw || 0);
+    const questions = listTicketFormQuestions(interaction.guild.id, panelId, typeId);
+    const slice = questions.slice(startIndex, startIndex + 5);
+    const draft = getDraft(interaction.guild.id, interaction.user.id, panelId, typeId) ?? {guildId:interaction.guild.id, panelId, typeId, userId:interaction.user.id, answers:[], index:0, expiresAt:Date.now() + 14 * 60 * 1000};
+    for (const q of slice) {
+      const value = interaction.fields.getTextInputValue(`q:${q.question_id}`);
+      draft.answers = draft.answers.filter(a => a.questionId !== q.question_id);
+      draft.answers.push({questionId:q.question_id, label:q.label, answer:value});
+    }
+    draft.index = startIndex + slice.length;
+    draft.expiresAt = Date.now() + 14 * 60 * 1000;
+    setDraft(draft);
+
+    if (draft.index < questions.length) {
+      const {modal} = buildTicketFormModal(panelId, typeId, questions, draft.index);
+      await interaction.showModal(modal);
+      return true;
+    }
+
+    await interaction.deferReply({flags:discord.MessageFlags.Ephemeral});
+    ticketFormDrafts.delete(draftKey(interaction.guild.id, interaction.user.id, panelId, typeId));
+    const route = evaluateTicketFormRoute(interaction.guild.id, panelId, typeId, draft.answers);
+    const result = await openTicket(interaction.client, interaction, panelId, typeId, {answers:draft.answers, route});
+    await interaction.editReply({content:result.success ? `Ticket opened in ${result.channel}.` : `Could not open the ticket (${result.reason}).`});
+    return true;
+  }
+
+  const parts = customId.split(":");
+  if ((parts[1] === "type" || parts[1] === "open") && interaction.isStringSelectMenu?.() || interaction.isButton?.() || interaction.isStringSelectMenu?.()) {
+    const panelId = parts[2];
+    const typeId = parts[1] === "type" ? interaction.values?.[0] : parts[3];
+    const questions = listTicketFormQuestions(interaction.guild.id, panelId, typeId);
+    if (questions.length) {
+      const form = await startTicketForm(interaction, panelId, typeId);
+      if (form.started) {return true;}
+    }
   }
 
   await interaction.deferReply({flags:discord.MessageFlags.Ephemeral});
-  const parts = customId.split(":");
-
   if (parts[1] === "type") {
     const result = await openTicket(interaction.client, interaction, parts[2], interaction.values?.[0]);
-    await interaction.editReply({content:result.success
-      ? `Ticket opened in ${result.channel}.`
-      : `Could not open the ticket (${result.reason}).`});
+    await interaction.editReply({content:result.success ? `Ticket opened in ${result.channel}.` : `Could not open the ticket (${result.reason}).`});
     return true;
   }
-
   if (parts[1] === "open") {
     const result = await openTicket(interaction.client, interaction, parts[2], parts[3]);
-    await interaction.editReply({content:result.success
-      ? `Ticket opened in ${result.channel}.`
-      : `Could not open the ticket (${result.reason}).`});
+    await interaction.editReply({content:result.success ? `Ticket opened in ${result.channel}.` : `Could not open the ticket (${result.reason}).`});
     return true;
   }
-
   if (parts[1] === "close") {
     const result = await closeTicket(interaction.client, interaction.guild, parts[2], interaction.user.id);
     await interaction.editReply({content:result.success ? "Ticket closed." : "That ticket is already closed."});

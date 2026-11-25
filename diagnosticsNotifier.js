@@ -1,6 +1,6 @@
 import {startDiagnosticMonitor} from "bargaz/diagnosticMonitor.js";
 import {isShutdownRequested} from "bargaz/shutdownCoordinator.js";
-import {getOwnerChannel} from "./owner.js";
+import {getOwnerChannel, broadcastAlert} from "./owner.js";
 
 const ISSUE_NAMES = {
   diagnostics_unavailable: "System diagnostics are unavailable or stale.",
@@ -29,7 +29,7 @@ function describeIssue(issue) {
   return issue;
 }
 
-export function startDiagnosticsNotifier() {
+export function startDiagnosticsNotifier(client = null) {
   if (monitor || isShutdownRequested()) {
     return;
   }
@@ -39,25 +39,23 @@ export function startDiagnosticsNotifier() {
       "http://127.0.0.1:3001/endpoints/diagnostics",
 
     async onAlert({recovered, issues}) {
-      if (isShutdownRequested()) {
-        return;
-      }
+      if (isShutdownRequested()) {return;}
 
       const channel = await getOwnerChannel("errors");
-
-      if (!channel) {
-        throw new Error("The owner errors channel is unavailable.");
-      }
-
       const content = recovered
         ? "🟢 **Bargaz system diagnostics recovered.**"
         : "🔴 **Bargaz system diagnostic alert**\n" +
           issues.map(issue => `- ${describeIssue(issue)}`).join("\n");
 
-      await channel.send({
-        content: content.slice(0, 1900),
-        allowedMentions: {parse: []}
-      });
+      if (channel) {
+        await channel.send({content: content.slice(0, 1900), allowedMentions: {parse: []}}).catch(() => {});
+      }
+
+      await broadcastAlert(client, {
+        title: recovered ? "System diagnostics recovered" : "System diagnostic alert",
+        description: recovered ? "Bargaz system diagnostics recovered." : issues.map(issue => `- ${describeIssue(issue)}`).join("\n").slice(0, 4096),
+        color: recovered ? 0x57F287 : 0xED4245
+      }).catch(() => {});
     }
   });
 }

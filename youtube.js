@@ -1,5 +1,6 @@
 import axios from "axios";
 import { getDB } from "./storage.js";
+import * as apiLimits from "./apiLimits.js";
 
 const YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3";
 
@@ -45,10 +46,10 @@ function resetQuotaIfNeeded() {
   }
 }
 
-
-function recordQuotaUsage(units) {
+function recordQuotaUsage(units, kind = "units") {
   resetQuotaIfNeeded();
   quotaUsed += units;
+  apiLimits.recordYouTubeUsage(units, kind);
 }
 
 
@@ -57,10 +58,11 @@ export function getQuotaUsage() {
 
   return {
     date: quotaDate,
-    used: quotaUsed
+    used: quotaUsed,
+    searches: apiLimits.getLimitStatus("youtube")?.searches ?? 0,
+    limits: apiLimits.getLimitStatus("youtube")
   };
 }
-
 
 /*
 =====================================================
@@ -70,9 +72,15 @@ YouTube API
 
 async function youtubeRequest(endpoint, params, quotaCost = 1, options = {}) {
   if (!process.env.YOUTUBE_API_KEY) {
-    throw new Error(
-      "YOUTUBE_API_KEY is not configured."
-    );
+    throw new Error("YOUTUBE_API_KEY is not configured.");
+  }
+
+  const kind = endpoint === "search" ? "search" : "quota";
+  const limit = apiLimits.limitDetails("youtube", kind);
+  if (limit.limited) {
+    const err = new Error(apiLimits.formatLimitMessage("youtube", limit));
+    err.code = "YOUTUBE_LIMITED";
+    throw err;
   }
 
   try {
@@ -80,7 +88,6 @@ async function youtubeRequest(endpoint, params, quotaCost = 1, options = {}) {
       `${YOUTUBE_API_BASE}/${endpoint}`,
       {
         timeout: 15000,
-
         params: {
           key: process.env.YOUTUBE_API_KEY,
           ...params
@@ -88,22 +95,32 @@ async function youtubeRequest(endpoint, params, quotaCost = 1, options = {}) {
       }
     );
 
-    recordQuotaUsage(quotaCost);
-
+    recordQuotaUsage(quotaCost, kind);
+    if (apiLimits.isLimited("youtube", kind)) {await apiLimits.recordLimitRecovery("youtube", kind);}
     return response.data;
 
   } catch (error) {
-    const apiError =
-      error.response?.data?.error?.message ??
-      error.message;
-
-    if (!options.quiet) {
-      console.error(
-        `YouTube API request failed (${endpoint}):`,
-        apiError
-      );
+    const status = error.response?.status;
+    const reasons = (error.response?.data?.error?.errors ?? []).map(e => String(e.reason ?? "").toLowerCase());
+    const message = String(error.response?.data?.error?.message ?? error.message ?? "");
+    const quotaReason = reasons.find(r => ["quotaexceeded", "dailylimitexceeded", "userratelimitexceeded", "ratelimitexceeded"].includes(r));
+    const isQuota = [403, 429].includes(status) && (quotaReason || /quota|rate limit|dailylimit/i.test(message));
+    if (isQuota) {
+      await apiLimits.recordLimitHit("youtube", {
+        kind,
+        status,
+        reason: quotaReason || message,
+        resetAt: null
+      });
     }
 
+    const apiError = error.response?.data?.error?.message ?? error.message;
+    if (!options.quiet && !isQuota) {
+      console.error(`YouTube API request failed (${endpoint}):`, apiError);
+    }
+    if (!options.quiet && isQuota) {
+      console.warn(`YouTube API limit reached (${endpoint}):`, apiError);
+    }
     throw error;
   }
 }

@@ -107,6 +107,24 @@ export function buildButtonRow(buttons) {
   return new discord.ActionRowBuilder().addComponents(...components);
 }
 
+// Builds an action row containing one channel select menu
+// config = {placeholder, minValues, maxValues, disabled, channelTypes}
+export function buildChannelSelectRow(customId, config = {}) {
+  const maxValues = Math.max(1, Math.min(config.maxValues ?? 1, 25));
+  const minValues = Math.max(0, Math.min(config.minValues ?? 1, maxValues));
+  const row = new discord.ActionRowBuilder().addComponents(
+    new discord.ChannelSelectMenuBuilder()
+      .setCustomId(clipText(customId, DISCORD_LIMITS.customId))
+      .setPlaceholder(clipText(config.placeholder || "Choose a channel", DISCORD_LIMITS.placeholder))
+      .setMinValues(minValues)
+      .setMaxValues(maxValues)
+      .setDisabled(Boolean(config.disabled))
+  );
+  const channelTypes = (config.channelTypes ?? [discord.ChannelType.GuildText, discord.ChannelType.GuildAnnouncement]).filter(Boolean);
+  if (channelTypes.length) {row.components[0].setChannelTypes(...channelTypes);}
+  return row;
+}
+
 // Clips text to a maximum length without creating mentions
 export function clip(value, max = 100) {return String(value ?? "").slice(0, max);}
 

@@ -6,6 +6,7 @@ import * as notifications  from "./notifications.js";
 import * as featureSettings from "./featureSettings.js";
 import * as twitch         from "./twitch.js";
 import * as kick           from "./kick.js";
+import * as apiLimits      from "./apiLimits.js";
 import {getDB}             from "./storage.js";
 import {trackInterval, trackTimeout, trackBackgroundTask, clearTrackedTimer} from "./lifecycle.js";
 
@@ -273,14 +274,60 @@ async function lockChannel(channel, guild) {
   }
 }
 
-async function fetchJson(url, options = {}) {
+async function fetchJson(url, options = {}, meta = {}) {
+  const provider = meta.provider;
+  const kind = meta.kind ?? "any";
+  if (provider) {
+    const limit = apiLimits.limitDetails(provider, kind);
+    if (limit.limited) {
+      const err = new Error(apiLimits.formatLimitMessage(provider, limit));
+      err.code = "API_LIMITED";
+      throw err;
+    }
+  }
+
   try {
     const response = await fetch(url, options);
-    if (!response.ok) {throw new Error(`HTTP ${response.status}`);}
+    if (!response.ok) {
+      const retryAfter = Number(response.headers.get("retry-after"));
+      const resetHeader = Number(response.headers.get("ratelimit-reset"));
+      const remaining = response.headers.get("ratelimit-remaining");
+      const bodyText = await response.text().catch(() => "");
+      let body = null;
+      try {body = JSON.parse(bodyText);} catch {}
+
+      if (provider && meta.reportLimit !== false && [401,403,429].includes(response.status)) {
+        const ytReasons = (body?.error?.errors ?? []).map(e => String(e.reason ?? "").toLowerCase());
+        const quotaReason = ytReasons.find(r => ["quotaexceeded","dailylimitexceeded","userratelimitexceeded","ratelimitexceeded"].includes(r));
+        const isLimit = response.status === 429 || quotaReason || /quota|rate limit|dailylimit/i.test(bodyText);
+        const isAuth = provider === "kick" && [401,403].includes(response.status) && !isLimit;
+        if (isLimit || isAuth) {
+          await apiLimits.recordLimitHit(provider, {
+            kind,
+            status: response.status,
+            reason: quotaReason || body?.error?.message || bodyText.slice(0, 160) || `HTTP ${response.status}`,
+            retryAfterMs: Number.isFinite(retryAfter) ? retryAfter * 1000 : undefined,
+            resetAt: Number.isFinite(resetHeader) ? resetHeader * 1000 : undefined,
+            remaining: remaining == null ? undefined : Number(remaining)
+          });
+        }
+      }
+
+      const err = new Error(`HTTP ${response.status}`);
+      err.status = response.status;
+      err.body = bodyText;
+      throw err;
+    }
+
+    if (provider && apiLimits.isLimited(provider, kind)) {
+      await apiLimits.recordLimitRecovery(provider, kind);
+    }
     return await response.json();
   } catch (error) {
-    log.warn("BargazBot social metric request failed:", error);
-    return null;
+    if (error.code !== "API_LIMITED") {
+      log.warn("BargazBot social metric request failed:", error?.message ?? error);
+    }
+    throw error;
   }
 }
 
@@ -292,27 +339,28 @@ async function youtubeMetrics(channelId, token = null) {
     ...values, ...(apiKey ? {key:apiKey} : {})
   })}`;
 
-  const channelData = await fetchJson(base("channels", {part:"statistics", id:channelId}), {headers});
+  const channelData = await fetchJson(base("channels", {part:"statistics", id:channelId}), {headers}, {provider:"youtube", kind:"quota"});
   const stats = channelData?.items?.[0]?.statistics ?? {};
   const subscribers = Number(stats.subscriberCount ?? 0);
   const result = {
     followers:subscribers,
     subscribers,
-    views:Number(stats.viewCount ?? 0),
     videos:Number(stats.videoCount ?? 0),
-    clips:0,
+    views:Number(stats.viewCount ?? 0),
     live:false,
     viewers:0
   };
 
-  const liveData = await fetchJson(base("search", {
-    part:"snippet", channelId, eventType:"live", type:"video", maxResults:"1"
-  }), {headers});
-  const videoId = liveData?.items?.[0]?.id?.videoId;
-  if (videoId) {
-    result.live = true;
-    const video = await fetchJson(base("videos", {part:"liveStreamingDetails", id:videoId}), {headers});
-    result.viewers = Number(video?.items?.[0]?.liveStreamingDetails?.concurrentViewers ?? 0);
+  if (!apiLimits.isLimited("youtube", "search")) {
+    const liveData = await fetchJson(base("search", {
+      part:"snippet", channelId, eventType:"live", type:"video", maxResults:"1"
+    }), {headers}, {provider:"youtube", kind:"search"});
+    const videoId = liveData?.items?.[0]?.id?.videoId;
+    if (videoId) {
+      result.live = true;
+      const video = await fetchJson(base("videos", {part:"liveStreamingDetails", id:videoId}), {headers}, {provider:"youtube", kind:"quota"});
+      result.viewers = Number(video?.items?.[0]?.liveStreamingDetails?.concurrentViewers ?? 0);
+    }
   }
   return result;
 }
@@ -324,9 +372,9 @@ async function twitchMetrics(channelId) {
   if (!token) {return {};}
   const headers = {"Client-ID":clientId, authorization:`Bearer ${token}`};
   const id = encodeURIComponent(channelId);
-  const userData = await fetchJson(`https://api.twitch.tv/helix/users?id=${id}`, {headers});
-  const followData = await fetchJson(`https://api.twitch.tv/helix/channels/followers?broadcaster_id=${id}&first=1`, {headers});
-  const streamData = await fetchJson(`https://api.twitch.tv/helix/streams?user_id=${id}`, {headers});
+  const userData = await fetchJson(`https://api.twitch.tv/helix/users?id=${id}`, {headers}, {provider:"twitch"});
+  const followData = await fetchJson(`https://api.twitch.tv/helix/channels/followers?broadcaster_id=${id}&first=1`, {headers}, {provider:"twitch"});
+  const streamData = await fetchJson(`https://api.twitch.tv/helix/streams?user_id=${id}`, {headers}, {provider:"twitch"});
   const user = userData?.data?.[0] ?? {};
   const stream = streamData?.data?.[0] ?? null;
   return {
@@ -344,19 +392,53 @@ async function kickMetrics(channelId, token = null) {
   const access = token ?? await kick.getAccessToken().catch(() => null);
   const headers = access ? {authorization:`Bearer ${access}`} : {};
   const id = encodeURIComponent(channelId);
-  const userData = await fetchJson(`https://api.kick.com/public/v1/users?id=${id}`, {headers});
-  const channelData = await fetchJson(`https://api.kick.com/public/v1/channels?user_id=${id}`, {headers});
-  const user = userData?.data?.[0] ?? {};
-  const channel = channelData?.data?.[0] ?? {};
-  return {
-    followers:Number(user.followers_count ?? user.followerCount ?? 0),
-    subscribers:0,
-    views:Number(user.view_count ?? 0),
-    videos:0,
-    clips:0,
-    live:Boolean(channel.stream?.is_live ?? user.is_live ?? false),
-    viewers:Number(channel.stream?.viewer_count ?? 0)
+
+  const fetchBySlug = async () => {
+    const row = getDB().prepare("SELECT channel_handle, channel_name FROM kick_channels WHERE channel_id = ?").get(String(channelId));
+    const slug = String(row?.channel_handle ?? row?.channel_name ?? "").replace(/^@/, "").trim();
+    if (!slug) {throw new Error("Kick channel slug not found for metric lookup.");}
+    const appAccess = await kick.getAccessToken().catch(() => null);
+    const appHeaders = appAccess ? {authorization:`Bearer ${appAccess}`} : {};
+    const data = await fetchJson(`https://api.kick.com/public/v1/channels?slug=${encodeURIComponent(slug)}`, {headers:appHeaders}, {provider:"kick"});
+    const channel = data?.data?.[0] ?? {};
+    return {
+      followers:0,
+      subscribers:Number(channel.active_subscribers_count ?? 0),
+      views:0,
+      videos:0,
+      clips:0,
+      live:Boolean(channel.stream?.is_live ?? false),
+      viewers:Number(channel.stream?.viewer_count ?? 0)
+    };
   };
+
+  if (!token) {return fetchBySlug();}
+
+  try {
+    const userData = await fetchJson(`https://api.kick.com/public/v1/users?id=${id}`, {headers}, {provider:"kick", reportLimit:false});
+    const channelData = await fetchJson(`https://api.kick.com/public/v1/channels?user_id=${id}`, {headers}, {provider:"kick", reportLimit:false});
+    const user = userData?.data?.[0] ?? {};
+    const channel = channelData?.data?.[0] ?? {};
+    return {
+      followers:Number(user.followers_count ?? user.followerCount ?? 0),
+      subscribers:Number(channel.active_subscribers_count ?? 0),
+      views:Number(user.view_count ?? 0),
+      videos:0,
+      clips:0,
+      live:Boolean(channel.stream?.is_live ?? user.is_live ?? false),
+      viewers:Number(channel.stream?.viewer_count ?? 0)
+    };
+  } catch (error) {
+    if (error?.status === 401 || error?.status === 403) {return fetchBySlug();}
+    throw error;
+  }
+}
+
+const METRIC_CACHE_TTL_MS = 5 * 60 * 1000;
+const metricCache = new Map();
+
+function metricCacheKey(guildId, platform, accountId, source) {
+  return `${guildId}:${platform}:${accountId}:${source}`;
 }
 
 export async function getSocialMetrics(guildOrId, options = {}) {
@@ -380,26 +462,30 @@ export async function getSocialMetrics(guildOrId, options = {}) {
     }
   }
 
+  const cacheKey = metricCacheKey(guildId, platform, accountId, source);
+  const cached = metricCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {return cached.value;}
+
   try {
     let values = {};
     if (platform === "youtube")  {values = await youtubeMetrics(accountId, token);}
     else if (platform === "twitch") {values = await twitchMetrics(accountId);}
     else {values = await kickMetrics(accountId, token);}
-    return {...defaults, ...values};
+    const merged = {...defaults, ...values};
+    metricCache.set(cacheKey, {expires: Date.now() + METRIC_CACHE_TTL_MS, value: merged});
+    return merged;
   } catch (error) {
-    if (guild) {
-      guildLogger.logFailureSafe(guild, {
-        category:"counter",
-        title:"Social counter refresh failed",
-        description:`Could not read ${platform} metrics.`,
-        fields:[
-          {name:"Platform", value:platform, inline:true},
-          {name:"Account", value:accountId || "None", inline:true}
-        ],
+    if (cached?.value) {return cached.value;}
+    if (error?.code !== "API_LIMITED" && guild) {
+      await guildLogger.logFailureSafe(guild, {
+        category:"data",
+        title:"Social metric refresh failed",
+        description:"A social metric refresh failed. Counters may be stale until the next successful refresh.",
         error
       }).catch(() => {});
-    } else {
-      log.warn("BargazBot social metric refresh failed:", guildId, platform, error);
+    }
+    if (error?.code !== "API_LIMITED") {
+      log.warn("BargazBot social metrics failed:", platform, accountId, error?.message ?? error);
     }
     return defaults;
   }

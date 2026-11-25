@@ -1,6 +1,9 @@
 import {startUpsMonitor} from "bargaz/upsMonitor.js";
 import {beginShutdown, addShutdownBlocker, removeShutdownBlocker, isShutdownRequested} from "bargaz/shutdownCoordinator.js";
 import {getOwnerStatusChannel} from "./owner.js";
+import * as channelManager from "./channelManager.js";
+import * as featureSettings from "./featureSettings.js";
+import {EnvVar} from "./config.js";
 
 const BATTERY_UPDATE_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -73,6 +76,30 @@ function shutdownMessage(status, shutdownRequest) {
   return message;
 }
 
+async function broadcastGuildStatus(client, content) {
+  if (!client) {return;}
+  const tasks = [];
+  for (const guild of client.guilds.cache.values()) {
+    if (guild.id === EnvVar.OWNER_SERVER_ID) {continue;}
+    tasks.push((async () => {
+      try {
+        channelManager.ensureGuildData(guild);
+        if (!featureSettings.isFeatureEnabled(guild.id, "status")) {return;}
+        const channel = await channelManager.getChannel(guild, "status");
+        if (!channel?.isTextBased() || channel.isThread()) {return;}
+        await Promise.race([
+          channel.send({content:String(content).slice(0, 1900), allowedMentions:{parse:[]}}),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("status send timeout")), 5000))
+        ]);
+      } catch {}
+    })());
+  }
+  await Promise.race([
+    Promise.allSettled(tasks),
+    new Promise(resolve => setTimeout(resolve, 7000))
+  ]);
+}
+
 async function sendOrEditUpsMessage(channel, client, content) {
   try {
     const messages = await channel.messages.fetch({limit: 1});
@@ -134,21 +161,17 @@ export function startUpsNotifier(client) {
         return;
       }
 
-      const channel = await getOwnerStatusChannel();
-
-      if (!channel) {
-        return;
-      }
-
       const powerMessage = powerSource === "battery"
         ? batteryMessage(status.battery_percent)
         : externalMessage();
+      const content = powerMessage + networkMessage(network);
 
-      const sent = await sendOrEditUpsMessage(
-        channel,
-        client,
-        powerMessage + networkMessage(network)
-      );
+      const channel = await getOwnerStatusChannel();
+      let sent = false;
+      if (channel) {
+        sent = await sendOrEditUpsMessage(channel, client, content);
+      }
+      await broadcastGuildStatus(client, content);
 
       if (sent) {
         previousPowerSource = powerSource;
@@ -169,14 +192,15 @@ export function startUpsNotifier(client) {
       addShutdownBlocker("discord-shutdown-notification");
 
       try {
+        const content = shutdownMessage(status, request);
         const channel = await getOwnerStatusChannel();
-
         if (channel) {
-          await channel.send({
-            content: shutdownMessage(status, request),
-            allowedMentions: {parse: []}
-          });
+          await Promise.race([
+            channel.send({content, allowedMentions: {parse: []}}),
+            new Promise(resolve => setTimeout(resolve, 5000))
+          ]).catch(error => console.error("Owner shutdown Discord notification failed:", error));
         }
+        await broadcastGuildStatus(client, content).catch(() => {});
       } catch (error) {
         console.error("Shutdown Discord notification failed:", error);
       } finally {

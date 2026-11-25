@@ -87,8 +87,8 @@ export function buildNavigationEmbed(guild, messageId) {
   ).all(guild.id, messageId);
 
   const embed = new discord.EmbedBuilder()
-    .setTitle(message.title)
-    .setDescription(message.description ?? "")
+    .setTitle(String(message.title ?? "Server navigation").slice(0, 256))
+    .setDescription(String(message.description ?? "").slice(0, 4096) || " ")
     .setColor(0x5865F2)
     .setTimestamp();
 
@@ -100,10 +100,10 @@ export function buildNavigationEmbed(guild, messageId) {
         if (!live) {return null;}
         const description = row.description_override ?? (config.useTopics ? live.topic : null) ?? "";
         if (config.omitEmpty && !description) {return `• <#${row.channel_id}>`;}
-        return `• <#${row.channel_id}>${description ? ` — ${description}` : ""}`;
+        return `• <#${row.channel_id}>${description ? ` — ${String(description).slice(0, 120)}` : ""}`;
       })
       .filter(Boolean);
-    if (lines.length) {embed.addFields({name:category.name, value:lines.join("\n").slice(0, 1024), inline:false});}
+    if (lines.length) {embed.addFields({name:String(category.name || "Channels").slice(0, 256), value:lines.join("\n").slice(0, 1024), inline:false});}
   }
   return embed;
 }

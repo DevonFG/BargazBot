@@ -10,7 +10,7 @@ const ENDED_CONTENT_RETENTION = 1800000;
 
 let accessToken = null;
 let accessTokenExpiresAt = 0;
-
+let tokenPromise = null;
 
 /*
 =====================================================
@@ -82,7 +82,6 @@ async function requestAccessToken() {
   }
 }
 
-
 export async function getAccessToken() {
   if (
     accessToken &&
@@ -92,7 +91,15 @@ export async function getAccessToken() {
     return accessToken;
   }
 
-  return requestAccessToken();
+  if (tokenPromise) {
+    return tokenPromise;
+  }
+
+  tokenPromise = requestAccessToken().finally(() => {
+    tokenPromise = null;
+  });
+
+  return tokenPromise;
 }
 
 

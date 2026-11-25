@@ -26,7 +26,7 @@ import Database              from "better-sqlite3";
 import {isShutdownRequested} from "bargaz/shutdownCoordinator.js";
 import {trackBotCallback}    from "./lifecycle.js";
 import {getDB, closeDB, initDB, getNotificationDedupeHours, setNotificationDedupeHours} from "./storage.js";
-import {menuId, menuOption, buildSelectRow, buildButtonRow, buildMentionableRow, parseMenuId} from "./utils.js";
+import {menuId, menuOption, buildSelectRow, buildButtonRow, buildMentionableRow, parseMenuId, buildChannelSelectRow} from "./utils.js";
 import {DB_BACKUP_DIR, DB_DIR, DB_PATH}                                                 from "./config.js";
 
 const BOT_VERSION = (() => {
@@ -1026,7 +1026,7 @@ async function handleDmHelp(interaction) {
 
 const FEATURE_LABELS = {
   notifications:"Creator notifications", welcome:"Welcome messages", goodbye:"Goodbye messages",
-  logs:"Server logs", updates:"BargazBot updates", status:"Status",
+  logs:"Server logs", updates:"BargazBot updates", status:"Status", alerts:"BargazBot alerts",
   inactivity:"Inactivity alerts", timers:"Timers and reminders", birthdays:"Birthday announcements",
   autopublish:"Auto publish", dm:"Direct messages", counters:"Server counters",
   entitlement:"Entitlements", feedback:"Feedback",
@@ -1035,6 +1035,8 @@ const FEATURE_LABELS = {
   "role-rewards":"Role rewards", "account-linking":"Account linking"
 };
 
+const GUILD_FEATURE_KEYS = featureSettings.FEATURE_KEYS.filter(key => key !== "dm");
+
 const CHANNEL_PURPOSES = [
   ["notifications", "Creator notification fallback", "announcement_channel_id"],
   ["welcome",       "Welcome messages",              "welcome_channel_id"],
@@ -1042,6 +1044,7 @@ const CHANNEL_PURPOSES = [
   ["logs",          "Server logs",                   "logs_channel_id"],
   ["updates",       "BargazBot updates",             "updates_channel_id"],
   ["status",        "Status",                        "status_channel_id"],
+  ["alerts",        "BargazBot alerts",              "alerts_channel_id"],
   ["tickets",       "Ticket panel channel",          "tickets_channel_id"],
   ["bot-detection", "Bot-detection channel",         "bot_detection_channel_id"]
 ];
@@ -1057,6 +1060,7 @@ function featureChannelRows(guildId) {
 }
 
 function renderFeatureChannelMenu(guildId, state) {
+  const guild = state.guild;
   const embed = new discord.EmbedBuilder()
     .setTitle("BargazBot Features")
     .setColor(0x5865F2)
@@ -1068,8 +1072,8 @@ function renderFeatureChannelMenu(guildId, state) {
     const summary = CHANNEL_PURPOSES
       .map(([, label, key]) => `${label}: ${settings[key] ? `<#${settings[key]}>` : "Not set"}`)
       .join("\n");
-    const featureLines = featureSettings.FEATURE_KEYS
-      .map(key => `${featureSettings.isFeatureEnabled(guildId, key) ? "✅" : "❌"} ${FEATURE_LABELS[key] ?? key} — ${featureSettings.getFeatureResponseType(guildId, key) ?? "none"}`)
+    const featureLines = GUILD_FEATURE_KEYS
+      .map(key => `${featureSettings.isFeatureEnabled(guildId, key) ? "✅" : "❌"} ${FEATURE_LABELS[key] ?? key}`)
       .join("\n");
     embed.setDescription((state.status ? `${state.status}\n\n` : "") +
       `**Channels**\n${summary}\n\n**Features**\n${featureLines}`);
@@ -1077,11 +1081,10 @@ function renderFeatureChannelMenu(guildId, state) {
   }
 
   if (state.page === "channels") {
-    const settings = channelManager.getChannelAssignments(guildId) ?? {};
     embed.setDescription("Pick a feature, then pick a channel. Use **Clear** to unset it.");
     rows = [
-      buildSelectRow(menuId("features-config","channels"), CHANNEL_PURPOSES.map(([key,label]) =>
-        menuOption(label, key, settings[CHANNEL_PURPOSES.find(row => row[0] === key)[2]] ? "Configured" : "Not set")
+      buildSelectRow(menuId("features-config","channels"), CHANNEL_PURPOSES.map(([key,label,,]) =>
+        menuOption(label, key)
       ), {placeholder:"Choose a feature channel"}),
       buildButtonRow([{customId:menuId("features-config","channels","back"), label:"Back", style:"secondary"}])
     ];
@@ -1089,30 +1092,29 @@ function renderFeatureChannelMenu(guildId, state) {
 
   if (state.page === "channels-pick") {
     const purpose = CHANNEL_PURPOSES.find(row => row[0] === state.purpose);
-    embed.setDescription(`Choose the channel for **${purpose[1]}**.`);
+    embed.setDescription(`Choose the channel for **${purpose?.[1] ?? "channel"}**. You can search by typing in the channel picker.`);
     rows = [
-      buildSelectRow(menuId("features-config","channels","pick"), [
-        menuOption("Clear (unset)", "clear", "Remove this channel assignment"),
-        ...[...state.guild.channels.cache.values()]
-          .filter(channel => channel.isTextBased() && [discord.ChannelType.GuildText, discord.ChannelType.GuildAnnouncement].includes(channel.type))
-          .slice(0, 24)
-          .map(channel => menuOption(channel.name, channel.id))
-      ], {placeholder:"Choose a channel"}),
-      buildButtonRow([{customId:menuId("features-config","channels","pick","back"), label:"Back", style:"secondary"}])
+      buildChannelSelectRow(menuId("features-config","channels","pick"), {placeholder:"Choose a channel"}),
+      buildButtonRow([
+        {customId:menuId("features-config","channels","clear"), label:"Clear", style:"secondary"},
+        {customId:menuId("features-config","channels","pick","back"), label:"Back", style:"secondary"}
+      ])
     ];
   }
 
   if (state.page === "features") {
-    embed.setDescription("Select features to toggle together. Logging, updates, and status are on by default.");
+    embed.setDescription("Select features, then choose an action. DM settings are per-user and are not changed here.");
     rows = [
-      buildSelectRow(menuId("features-config","features"), featureSettings.FEATURE_KEYS.map(key =>
+      buildSelectRow(menuId("features-config","features"), GUILD_FEATURE_KEYS.map(key =>
         menuOption(FEATURE_LABELS[key] ?? key, key, featureSettings.isFeatureEnabled(guildId, key) ? "On" : "Off", featureSettings.isFeatureEnabled(guildId, key))
-      ), {placeholder:"Choose features", minValues:1, maxValues:Math.min(featureSettings.FEATURE_KEYS.length,25)}),
+      ), {placeholder:"Choose features", minValues:1, maxValues:Math.min(GUILD_FEATURE_KEYS.length,25)}),
       buildSelectRow(menuId("features-config","features","toggle"), [
         menuOption("Turn selected on", "on"),
         menuOption("Turn selected off", "off"),
+        menuOption("Turn all on", "all-on"),
+        menuOption("Turn all off", "all-off"),
         menuOption("Reset all to defaults", "reset")
-      ], {placeholder:"Apply to selected features"}),
+      ], {placeholder:"Apply action"}),
       buildSelectRow(menuId("features-config","features","response"), [
         menuOption("Message", "message", "Visible to everyone"),
         menuOption("Ephemeral", "ephemeral", "Only the command user sees it")
@@ -1123,8 +1125,7 @@ function renderFeatureChannelMenu(guildId, state) {
 
   if (state.page === "responses") {
     embed.setDescription(
-      `Command default: **${featureSettings.getCommandResponseType(guildId)}**\n\n` +
-      "Changing all response types does not change the command default."
+      `Command default: **${featureSettings.getCommandResponseType(guildId)}**\n\nChanging all response types does not change the command default.`
     );
     rows = [
       buildSelectRow(menuId("features-config","responses","command"), [
@@ -1134,65 +1135,52 @@ function renderFeatureChannelMenu(guildId, state) {
       buildSelectRow(menuId("features-config","responses","all"), [
         menuOption("All features → message", "message"),
         menuOption("All features → ephemeral", "ephemeral")
-      ], {placeholder:"Set all feature response types (except command default)"}),
+      ], {placeholder:"Set all feature response types"}),
       buildButtonRow([{customId:menuId("features-config","responses","back"), label:"Back", style:"secondary"}])
     ];
   }
+
   return {embeds:[embed], components:rows, flags:discord.MessageFlags.Ephemeral};
 }
 
 async function handleFeaturesConfig(interaction) {
   if (!await requireCommandAccess(interaction, "features-config", "setup")) {return;}
   const state = {page:"home", purpose:null, status:null, features:[], guild:interaction.guild};
-  const render = () => ({...renderFeatureChannelMenu(interaction.guild.id, state), guild:interaction.guild});
   await interaction.deferReply({flags:discord.MessageFlags.Ephemeral});
-  const reply = await interaction.editReply(renderFeatureChannelMenu(interaction.guild.id, state));
-
-  const collector = createCommandCollector(reply, {time:300000});
+  await interaction.editReply(renderFeatureChannelMenu(interaction.guild.id, state));
+  const collector = createCommandCollector(await interaction.fetchReply(), {time:300000});
   onCommandComponent(collector, async component => {
     if (component.user.id !== interaction.user.id) {await component.reply({content:"Only the person who opened this menu can use it.", flags:discord.MessageFlags.Ephemeral}); return;}
     const parts = parseMenuId(component.customId);
     const action = parts[1];
     try {
       if (action === "back") {state.page = "home"; state.status = null; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+      if (action === "home") {state.page = component.values?.[0] ?? "home"; state.status = null; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
 
-      if (action === "home") {
-        const choice = component.values?.[0];
-        state.status = null;
-        state.page = choice === "home" ? "home" : choice;
-        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
-        return;
-      }
-
-      if (action === "channels" && parts[2] !== "pick") {
+      if (action === "channels" && parts[2] !== "pick" && parts[2] !== "clear") {
         if (parts[2] === "back") {state.page = "home"; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
-        state.purpose = component.values?.[0];
-        state.page = "channels-pick";
-        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
-        return;
+        state.purpose = component.values?.[0]; state.page = "channels-pick";
+        await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;
       }
-
-      if (action === "channels" && parts[2] === "pick") {
+      if (action === "channels" && (parts[2] === "pick" || parts[2] === "clear")) {
         if (parts[3] === "back") {state.page = "channels"; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
         const purpose = CHANNEL_PURPOSES.find(row => row[0] === state.purpose);
-        const channelId = component.values?.[0] === "clear" ? null : component.values?.[0];
+        const channelId = parts[2] === "clear" ? null : (component.values?.[0] ?? null);
         channelManager.setChannel(interaction.guild.id, state.purpose, channelId);
         await logging.logConfigurationChange(interaction.guild, {
-          user:interaction.user,
-          title:"BargazBot Channel Changed",
+          user:interaction.user, title:"BargazBot Channel Changed",
           description:`${interaction.user} changed a BargazBot channel setting.`,
-          fields:[{name:"Purpose", value:purpose[1], inline:true}, {name:"Channel", value:channelId ? `<#${channelId}>` : "Cleared", inline:true}]
+          fields:[{name:"Purpose", value:purpose?.[1] ?? state.purpose, inline:true}, {name:"Channel", value:channelId ? `<#${channelId}>` : "Cleared", inline:true}]
         });
-        state.status = `Updated **${purpose[1]}**.`;
-        state.page = "home";
-        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
-        return;
+        state.status = `Updated **${purpose?.[1] ?? state.purpose}**.`; state.page = "home";
+        await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;
       }
 
       if (action === "features") {
         if (parts[2] === "back") {state.page = "home"; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
         if (component.values && !parts[2]) {state.features = component.values ?? []; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
         const choice = component.values?.[0];
+
         if (parts[2] === "toggle") {
           if (choice === "reset") {
             featureSettings.resetFeatureSettings(interaction.guild.id, interaction.user.id);
@@ -1201,30 +1189,36 @@ async function handleFeaturesConfig(interaction) {
               entitlements.clearInstallerAutoAllocation(interaction.guild.id, interaction.user.id);
             }
             state.status = "Feature settings restored to defaults.";
-          }
-          else {
+          } else if (choice === "all-on" || choice === "all-off") {
+            const enabled = choice === "all-on";
+            featureSettings.setAllFeatureToggles(interaction.guild.id, enabled, interaction.user.id);
+            state.status = enabled ? "All guild features turned on." : "All guild features turned off (DM settings were not changed).";
+          } else {
+            const changes = [];
             for (const feature of state.features) {
-              featureSettings.setFeatureEnabled(interaction.guild.id, feature, choice === "on", interaction.user.id);
+              featureSettings.setFeatureSetting(interaction.guild.id, feature, {enabled: choice === "on"});
+              changes.push(`${FEATURE_LABELS[feature] ?? feature}: ${choice === "on" ? "on" : "off"}`);
               if (feature === "entitlement") {
-                if (choice === "on") {
-                  entitlements.ensureUser({id: interaction.user.id});
-                  entitlements.autoAllocateInstaller(interaction.guild.id, interaction.user.id);
-                }
-                if (choice === "off") {
-                  entitlements.removeGuildAllocations(interaction.user.id, interaction.guild.id);
-                  entitlements.clearInstallerAutoAllocation(interaction.guild.id, interaction.user.id);
-                }
+                if (choice === "on") {entitlements.ensureUser({id: interaction.user.id}); entitlements.autoAllocateInstaller(interaction.guild.id, interaction.user.id);}
+                if (choice === "off") {entitlements.removeGuildAllocations(interaction.user.id, interaction.guild.id); entitlements.clearInstallerAutoAllocation(interaction.guild.id, interaction.user.id);}
               }
             }
+            featureSettings.logFeatureConfigBatch(interaction.guild.id, interaction.user.id, "feature toggles", changes);
             state.status = `Updated ${state.features.length} feature(s).`;
           }
         }
+
         if (parts[2] === "response") {
-          for (const feature of state.features) {featureSettings.setFeatureReplyType(interaction.guild.id, feature, choice, interaction.user.id);}
+          const changes = [];
+          for (const feature of state.features) {
+            featureSettings.setFeatureSetting(interaction.guild.id, feature, {responseType: choice});
+            changes.push(`${FEATURE_LABELS[feature] ?? feature}: ${choice}`);
+          }
+          featureSettings.logFeatureConfigBatch(interaction.guild.id, interaction.user.id, "feature response types", changes);
           state.status = `Set response type for ${state.features.length} feature(s).`;
         }
-        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
-        return;
+
+        await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;
       }
 
       if (action === "responses") {
@@ -1232,16 +1226,14 @@ async function handleFeaturesConfig(interaction) {
         const choice = component.values?.[0];
         if (parts[2] === "command") {featureSettings.updateCommandReplyType(interaction.guild.id, choice, interaction.user.id); state.status = `Command default is now **${choice}**.`;}
         if (parts[2] === "all") {featureSettings.setAllFeatureReplyTypes(interaction.guild.id, choice, interaction.user.id); state.status = `All feature response types are now **${choice}**.`;}
-        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
-        return;
+        await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;
       }
 
       if (action === "reset") {
         featureSettings.resetGuildSetup(interaction.guild.id);
         state.status = "Setup cleared. The next join or data deletion will run setup again.";
         state.page = "home";
-        await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
-        return;
+        await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;
       }
 
       await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
@@ -4162,7 +4154,11 @@ async function showConfigModal(source, modal, customId) {
     time: 300000
   }).catch(() => null);
   await source.showModal(modal);
-  return submitted;
+  const result = await submitted;
+  if (result && !result.deferred && !result.replied) {
+    await result.deferUpdate().catch(() => {});
+  }
+  return result;
 }
 
 function configChannelOptions(guild, includeNone = false) {
@@ -4920,25 +4916,60 @@ const INVITE_BASE_PERMISSIONS = [
 ];
 
 const INVITE_PURPOSE_PERMISSIONS = {
-  notifications: [discord.PermissionFlagsBits.MentionEveryone],
-  welcome:       [],
-  goodbye:       [],
-  logs:          [discord.PermissionFlagsBits.ReadMessageHistory],
-  updates:       [],
-  status:        [],
-  inactivity:    [discord.PermissionFlagsBits.MentionEveryone],
-  timers:        [discord.PermissionFlagsBits.MentionEveryone],
-  birthdays:     [discord.PermissionFlagsBits.MentionEveryone],
-  autopublish:   [discord.PermissionFlagsBits.ManageMessages],
-  dm:            [],
-  counters:      [discord.PermissionFlagsBits.ManageChannels, discord.PermissionFlagsBits.ManageRoles]
+  notifications:   [discord.PermissionFlagsBits.MentionEveryone],
+  welcome:         [],
+  goodbye:         [],
+  logs:            [discord.PermissionFlagsBits.ReadMessageHistory, discord.PermissionFlagsBits.ViewAuditLog],
+  updates:         [],
+  status:          [],
+  alerts:          [],
+  inactivity:      [discord.PermissionFlagsBits.MentionEveryone],
+  timers:          [discord.PermissionFlagsBits.MentionEveryone],
+  birthdays:       [discord.PermissionFlagsBits.MentionEveryone],
+  autopublish:     [discord.PermissionFlagsBits.ManageMessages],
+  feedback:        [],
+  counters:        [discord.PermissionFlagsBits.ManageChannels, discord.PermissionFlagsBits.Connect],
+  "social-counters":[discord.PermissionFlagsBits.ManageChannels, discord.PermissionFlagsBits.Connect],
+  "reaction-roles":[discord.PermissionFlagsBits.ManageRoles, discord.PermissionFlagsBits.ReadMessageHistory, discord.PermissionFlagsBits.AddReactions],
+  verification:    [discord.PermissionFlagsBits.ManageRoles, discord.PermissionFlagsBits.ManageChannels],
+  tickets:         [discord.PermissionFlagsBits.ManageChannels, discord.PermissionFlagsBits.ManageThreads, discord.PermissionFlagsBits.SendMessagesInThreads],
+  navigation:      [],
+  "auto-mod":      [discord.PermissionFlagsBits.ManageMessages, discord.PermissionFlagsBits.ModerateMembers],
+  "role-rewards":  [discord.PermissionFlagsBits.ManageRoles],
+  "account-linking":[]
 };
 
-function invitePermissionsFor(selected) {
+function invitePermissionKey(key) {
+  return (INVITE_PURPOSE_PERMISSIONS[key] ?? []).map(bit => bit.toString()).sort().join(",");
+}
+
+function inviteFeatureGroups() {
+  const groups = new Map();
+  for (const key of Object.keys(INVITE_PURPOSE_PERMISSIONS)) {
+    const sig = invitePermissionKey(key);
+    if (!groups.has(sig)) {groups.set(sig, {sig, keys:[], bits:INVITE_PURPOSE_PERMISSIONS[key] ?? []});}
+    groups.get(sig).keys.push(key);
+  }
+  return [...groups.values()];
+}
+
+function invitePermissionsFor(selected, groups = inviteFeatureGroups()) {
   const bits = new Set(INVITE_BASE_PERMISSIONS);
-  const keys = selected.includes("all") ? Object.keys(INVITE_PURPOSE_PERMISSIONS) : selected;
+  const keys = new Set();
+  if (selected.includes("all")) {
+    for (const key of Object.keys(INVITE_PURPOSE_PERMISSIONS)) {keys.add(key);}
+  } else {
+    for (const value of selected) {
+      if (value.startsWith("group:")) {
+        const group = groups.find(g => g.sig === value.slice("group:".length));
+        for (const key of group?.keys ?? []) {keys.add(key);}
+      } else {
+        keys.add(value);
+      }
+    }
+  }
   for (const key of keys) {for (const bit of INVITE_PURPOSE_PERMISSIONS[key] ?? []) {bits.add(bit);}}
-  return [...bits].reduce((total, bit) => total | bit, 0n).toString();
+  return {permissions:[...bits].reduce((total, bit) => total | bit, 0n).toString(), keys:[...keys]};
 }
 
 function buildInviteUrl(applicationId, permissions, userInstall) {
@@ -4950,21 +4981,25 @@ function buildInviteUrl(applicationId, permissions, userInstall) {
 }
 
 async function handleInvite(interaction) {
+  const groups = inviteFeatureGroups();
+  const basicKeys = Object.keys(INVITE_PURPOSE_PERMISSIONS).filter(key => (INVITE_PURPOSE_PERMISSIONS[key] ?? []).length === 0);
   const options = [
-    menuOption("All (recommended)", "all", "The normal invite with every BargazBot permission"),
-    ...Object.keys(INVITE_PURPOSE_PERMISSIONS).map(key => menuOption(
-      FEATURE_LABELS[key] ?? key,
-      key,
-      INVITE_PURPOSE_PERMISSIONS[key].length ? "Includes extra permissions" : "Base permissions only"
+    menuOption("All (recommended)", "all", "Every BargazBot permission"),
+    menuOption("Basic features", "group:basic", `Least permissions: ${basicKeys.map(k => FEATURE_LABELS[k] ?? k).join(", ").slice(0, 90)}`),
+    ...groups.filter(g => g.bits.length > 0).map(group => menuOption(
+      group.keys.length === 1 ? (FEATURE_LABELS[group.keys[0]] ?? group.keys[0]) : `${FEATURE_LABELS[group.keys[0]] ?? group.keys[0]} + ${group.keys.length - 1} more`,
+      `group:${group.sig}`,
+      group.keys.map(k => FEATURE_LABELS[k] ?? k).join(", ").slice(0, 100)
     ))
-  ];
+  ].slice(0, 25);
 
   await interaction.reply({
     embeds:[new discord.EmbedBuilder()
       .setTitle("Invite BargazBot")
       .setDescription(
         "Choose what you want to use BargazBot for. I'll build an invite link with the permissions for it.\n\n" +
-        "**All** is the normal invite with every permission BargazBot uses."
+        "**All** is the normal invite with every permission BargazBot uses.\n" +
+        "**Basic features** includes features that need only the base bot permissions."
       )
       .setTimestamp()],
     components:[buildSelectRow(menuId("invite"), options, {
@@ -4982,21 +5017,16 @@ async function handleInvite(interaction) {
 
   onCommandComponent(collector, async component => {
     const selected = component.values ?? [];
-    const permissions = invitePermissionsFor(selected);
+    const actualSelected = selected.includes("group:basic") ? [...new Set([...selected.filter(v => v !== "group:basic"), ...basicKeys.map(k => `group:${invitePermissionKey(k)}`)])] : selected;
+    const {permissions, keys} = invitePermissionsFor(actualSelected, groups);
     const applicationId = interaction.client.application.id;
-    const labels = selected.includes("all")
-      ? "all configured permissions"
-      : selected.map(key => FEATURE_LABELS[key] ?? key).join(", ");
+    const labels = selected.includes("all") ? "all configured permissions" : keys.map(key => FEATURE_LABELS[key] ?? key).join(", ");
     const serverUrl = buildInviteUrl(applicationId, permissions, false);
     const userUrl = buildInviteUrl(applicationId, permissions, true);
-
     await component.update({
       embeds:[new discord.EmbedBuilder()
         .setTitle("BargazBot invite")
-        .setDescription(
-          `**Server invite** (${labels}): [Add to a server](${serverUrl})\n\n` +
-          `[Add BargazBot to your DMs](${userUrl})`
-        )
+        .setDescription(`**Server invite** (${labels.slice(0, 300)}): [Add to a server](${serverUrl})\n\n[Add BargazBot to your DMs](${userUrl})`)
         .setTimestamp()],
       components:[]
     });
@@ -5510,11 +5540,19 @@ async function featureMenu(interaction, command, render, onAction) {
     try {
       const next = await onAction(component, state, interaction);
       if (next !== undefined) {state.status = next;}
-      await component.update(body());
+      if (component.replied || component.deferred) {
+        await interaction.editReply({...body(), flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+      } else {
+        await component.update(body()).catch(async () => {
+          await interaction.editReply({...body(), flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+        });
+      }
     } catch (error) {
       log.error(`${command} menu error:`, error);
       state.status = `Error: ${error.message}`;
-      await component.update(body()).catch(() => {});
+      const payload = {...body(), flags:discord.MessageFlags.Ephemeral};
+      if (component.replied || component.deferred) {await interaction.editReply(payload).catch(() => {});}
+      else {await component.update(payload).catch(async () => {await interaction.editReply(payload).catch(() => {});});}
       collector.stop("error");
     }
   });
@@ -5616,68 +5654,97 @@ async function handleReactionRoleMenu(interaction) {
   });
 }
 
+function verificationModeLabel(mode) {
+  return {
+    0: "Off",
+    1: "Give verified role only",
+    2: "Hide channels until verified",
+    3: "Show channels, but make them read-only until verified",
+    4: "Require verification, but do not change channel permissions"
+  }[Number(mode)] ?? "Unknown";
+}
+
 function renderVerificationMenu(guild, state) {
   const config = featureSettings.getVerificationConfig(guild.id);
+  const mode = Number(config.mode ?? 1);
+  const botAction = config.botAction ?? "off";
   const embed = new discord.EmbedBuilder().setTitle("BargazBot Verification")
     .setDescription((state.status ? `${state.status}\n\n` : "") +
-      `Mode: **${config.mode}** • Role: ${config.roleId ? `<@&${config.roleId}>` : "None"}\n` +
-      `Preset: **${config.permissionPreset ?? "none"}** • Action: **${config.botAction ?? "kick"}**\n` +
-      `Bot channel: ${config.botDetectionChannelId ? `<#${config.botDetectionChannelId}>` : "None"}`)
+      `Verification: **${verificationModeLabel(mode)}**\n` +
+      `Verified role: ${config.roleId ? `<@&${config.roleId}>` : "None"}\n` +
+      `Bot detection: **${botAction === "off" ? "Off" : botAction === "ban" ? "Ban suspected bots" : "Kick suspected bots"}**\n` +
+      `Bot detection channel: ${config.botDetectionChannelId ? `<#${config.botDetectionChannelId}>` : "None"}`)
     .setTimestamp();
-  return {embeds:[embed], components:[
+
+  const rows = [
     buildSelectRow(menuId("verification","mode"), [
-      menuOption("Role only","1"), menuOption("Gate channels","2")
-    ], {placeholder:"Verification mode"}),
+      menuOption("Give verified role only","1","Only gives the verified role"),
+      menuOption("Hide channels until verified","2","Hides selected channels until the person verifies"),
+      menuOption("Show channels read-only until verified","3","People can see channels but cannot chat until verified"),
+      menuOption("Require verification, no channel changes","4","Verification is required but channel permissions stay the same")
+    ], {placeholder:"How should verification work?"}),
     buildSelectRow(menuId("verification","role"), [
       menuOption("Create Verified role","create"),
       ...matchingRoles(guild).slice(0,24).map(role => menuOption(role.name, role.id))
-    ], {placeholder:"Verification role"}),
-    buildSelectRow(menuId("verification","preset"), [
-      menuOption("No channel changes","none"), menuOption("Hide channels","hidden"), menuOption("View only","view")
-    ], {placeholder:"Permission preset"}),
-    buildSelectRow(menuId("verification","action"), [
-      menuOption("Kick","kick"), menuOption("Ban","ban")
-    ], {placeholder:"Bot-detection action"}),
-    buildSelectRow(menuId("verification","bot-channel"), [
-      menuOption("Create bot-detection channel","create"),
-      ...configChannelOptions(guild).filter(option => option.value !== "none").slice(0,24)
-    ], {placeholder:"Bot-detection channel"}),
-    buildButtonRow([
-      {customId:menuId("verification","post"), label:"Post verify button", style:"success"},
+    ], {placeholder:"Verified role"}),
+    buildSelectRow(menuId("verification","bot-action"), [
+      menuOption("Off","off","Do not automatically kick or ban suspected bots"),
+      menuOption("Kick suspected bots","kick","Kick accounts that look like bots"),
+      menuOption("Ban suspected bots","ban","Ban accounts that look like bots")
+    ], {placeholder:"Bot detection"})
+  ];
+
+  if (state.page === "bot") {
+    rows.push(buildChannelSelectRow(menuId("verification","bot-channel"), {placeholder:"Bot detection channel"}));
+    rows.push(buildButtonRow([
+      {customId:menuId("verification","bot-create"), label:"Create bot-detection channel", style:"secondary"},
       {customId:menuId("verification","notice"), label:"Post bot notice", style:"secondary"},
-      {customId:menuId("verification","disable"), label:"Disable gate", style:"danger"}
-    ])
-  ]};
+      {customId:menuId("verification","back"), label:"Back", style:"secondary"}
+    ]));
+  } else {
+    rows.push(buildButtonRow([
+      {customId:menuId("verification","post"), label:"Post verify button", style:"success"},
+      {customId:menuId("verification","disable"), label:"Disable verification", style:"danger"}
+    ]));
+  }
+  return {embeds:[embed], components:rows.slice(0,5)};
 }
 
 async function handleVerificationMenu(interaction) {
   await featureMenu(interaction, "verification", renderVerificationMenu, async (component, state, source) => {
     const action = parseMenuId(component.customId)[1];
     const guild = interaction.guild;
-    if (action === "mode") {await verification.setupVerification(guild, {mode:Number(component.values[0]), actorId:interaction.user.id}); return "Mode updated.";}
+    if (action === "mode") {await verification.setupVerification(guild, {mode:Number(component.values[0]), actorId:interaction.user.id}); state.page = "main"; return "Verification mode updated.";}
     if (action === "role") {
       const roleId = component.values[0];
       await verification.setupVerification(guild, {roleId, createRole:roleId === "create", actorId:interaction.user.id});
       await logFeatureTrail(source, "Verification role set", [{name:"Role", value:roleId, inline:true}]);
       return "Verification role set.";
     }
-    if (action === "preset") {await verification.setupVerification(guild, {permissionPreset:component.values[0], actorId:interaction.user.id}); return "Permission preset updated.";}
-    if (action === "action") {await verification.setupVerification(guild, {botAction:component.values[0], actorId:interaction.user.id}); return "Bot action updated.";}
+    if (action === "bot-action") {
+      const botAction = component.values[0];
+      await verification.setupVerification(guild, {botAction, actorId:interaction.user.id});
+      state.page = botAction === "off" ? "main" : "bot";
+      return botAction === "off" ? "Bot detection turned off." : "Bot detection enabled. Choose a bot-detection channel.";
+    }
     if (action === "bot-channel") {
       const channelId = component.values[0];
-      await verification.setupVerification(guild, {
-        botDetectionChannelId:channelId, createBotDetectionChannel:channelId === "create", actorId:interaction.user.id
-      });
+      await verification.setupVerification(guild, {botDetectionChannelId:channelId, createBotDetectionChannel:false, actorId:interaction.user.id});
       return "Bot-detection channel set.";
+    }
+    if (action === "bot-create") {
+      await verification.setupVerification(guild, {createBotDetectionChannel:true, actorId:interaction.user.id});
+      return "Bot-detection channel created/set.";
     }
     if (action === "post") {
       const channel = await channelManager.getChannel(guild, "bot-detection");
-      if (!channel) {return "Set a bot-detection channel first.";}
+      if (!channel) {return "Set a bot-detection channel first, or turn on bot detection and choose a channel.";}
       await channel.send(verification.buildVerificationPayload(guild));
       return "Verification button posted.";
     }
     if (action === "notice") {await verification.sendBotDetectionMessage(guild); return "Bot notice posted.";}
-    if (action === "disable") {await verification.disableVerification(guild); return "Verification gate disabled.";}
+    if (action === "back") {state.page = "main"; return "Back to verification settings.";}
+    if (action === "disable") {await verification.disableVerification(guild); state.page = "main"; return "Verification disabled.";}
   });
 }
 
@@ -5686,53 +5753,82 @@ function renderTicketMenu(guild, state) {
   const panel = state.panelId ? tickets.getPanel(guild.id, state.panelId) : panels[0] ?? null;
   state.panelId = panel?.panel_id ?? null;
   const types = panel ? tickets.listTicketTypes(guild.id, panel.panel_id) : [];
+  const questions = panel && state.typeId ? tickets.listTicketFormQuestions(guild.id, panel.panel_id, state.typeId) : [];
+  const routes = panel && state.typeId ? tickets.listTicketFormRoutes(guild.id, panel.panel_id, state.typeId) : [];
+
   const embed = new discord.EmbedBuilder().setTitle("BargazBot Tickets")
     .setDescription((state.status ? `${state.status}\n\n` : "") +
-      `Panels: ${panels.length} • Panel: **${panel?.title ?? "None"}**\n` +
-      `Types: ${types.length}\n` +
-      types.map(type => `• ${type.name} (\`${type.container_type}\`)`).join("\n"))
+      `Panels: ${panels.length} • Selected panel: **${panel?.title ?? "None"}**\n` +
+      `Types: ${types.length}${types.length ? "" : " — add a ticket type before users can open tickets."}\n` +
+      (panel ? `Panel channel: <#${panel.channel_id}>\n` : "") +
+      (state.typeId ? `Selected type form questions: ${questions.length} • Routes: ${routes.length}\n` : "") +
+      (types.length ? `\n${types.map(type => `• ${type.name} (\`${type.container_type}\`)`).join("\n")}` : ""))
+    .setColor(0x5865F2)
     .setTimestamp();
+
   const rows = [buildButtonRow([
     {customId:menuId("ticket","create"), label:"Create panel", style:"success"},
     {customId:menuId("ticket","add-type"), label:"Add type", style:"primary", disabled:!panel},
-    {customId:menuId("ticket","refresh"), label:"Refresh panel", style:"secondary", disabled:!panel},
-    {customId:menuId("ticket","delete-panel"), label:"Delete panel", style:"danger", disabled:!panel}
+    {customId:menuId("ticket","refresh"), label:"Refresh panel", style:"secondary", disabled:!panel}
   ])];
+
   if (panels.length) {
-    rows.push(buildSelectRow(menuId("ticket","panel"), panels.map(item =>
-      menuOption(item.title, item.panel_id)), {placeholder:"Choose a panel"}));
+    rows.push(buildSelectRow(menuId("ticket","panel"), panels.slice(0,25).map(item =>
+      menuOption(item.title || item.panel_id, item.panel_id, item.channel_id ? `#${guild.channels.cache.get(item.channel_id)?.name ?? item.channel_id}` : "No channel")
+    ), {placeholder:"Choose a panel"}));
   }
   if (types.length) {
-    rows.push(buildSelectRow(menuId("ticket","delete-type"), types.map(type =>
-      menuOption(type.name, type.type_id)), {placeholder:"Delete a ticket type"}));
+    rows.push(buildSelectRow(menuId("ticket","type-select"), types.slice(0,25).map(type =>
+      menuOption(type.name, type.type_id, "Select type for form setup/delete")
+    ), {placeholder:"Choose a ticket type"}));
   }
-  return {embeds:[embed], components:rows};
+  if (panel) {
+    rows.push(buildSelectRow(menuId("ticket","manage"), [
+      menuOption("Delete selected panel", "delete-panel"),
+      menuOption("Delete selected type", "delete-type", state.typeId ? "Deletes the selected ticket type" : "Choose a type first"),
+      menuOption("Add form question", "add-question", "Adds a question users answer before opening a ticket"),
+      menuOption("Clear form questions", "clear-questions", "Removes all form questions for selected type"),
+      menuOption("Add simple route", "add-route", "Route by one answer: yes/no/text match")
+    ], {placeholder:"Panel/type actions"}));
+  }
+  return {embeds:[embed], components:rows.slice(0,5)};
 }
 
 async function handleTicketMenu(interaction) {
   await featureMenu(interaction, "ticket", renderTicketMenu, async (component, state, source) => {
     const action = parseMenuId(component.customId)[1];
     const guild = interaction.guild;
+
     if (action === "create") {
+      state.page = "create";
+      state.status = "Choose the channel where the ticket panel should be posted.";
+      return;
+    }
+    if (action === "create-channel") {
+      const channelId = component.values?.[0];
       const customId = menuId("ticket","create-modal", interaction.id);
       const submitted = await showConfigModal(component, new discord.ModalBuilder()
         .setCustomId(customId).setTitle("Ticket panel")
         .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("title").setLabel("Panel title").setStyle(discord.TextInputStyle.Short)
-          .setValue("Support tickets").setRequired(true).setMaxLength(100)))
+          .setCustomId("title").setLabel("Panel title").setStyle(discord.TextInputStyle.Short).setValue("Support tickets").setRequired(true).setMaxLength(100)))
         .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("description").setLabel("Description").setStyle(discord.TextInputStyle.Paragraph)
-          .setValue("Choose a ticket type to open a ticket.").setRequired(false).setMaxLength(500))), customId);
+          .setCustomId("description").setLabel("Description").setStyle(discord.TextInputStyle.Paragraph).setValue("Choose a ticket type to open a ticket.").setRequired(false).setMaxLength(500))), customId);
       if (!submitted) {return;}
       const panel = await tickets.createPanel(guild, {
+        channelId,
         title:submitted.fields.getTextInputValue("title"),
         description:submitted.fields.getTextInputValue("description") || null
       });
       state.panelId = panel.panel_id;
-      await logFeatureTrail(source, "Ticket panel created", [{name:"Panel", value:panel.panel_id, inline:true}]);
+      state.page = "main";
+      await logFeatureTrail(source, "Ticket panel created", [{name:"Panel", value:panel.panel_id, inline:true}, {name:"Channel", value:`<#${channelId}>`, inline:true}]);
       return "Ticket panel created.";
     }
-    if (action === "panel") {state.panelId = component.values[0]; return "Panel selected.";}
+
+    if (action === "panel") {state.panelId = component.values[0]; state.typeId = null; return "Panel selected.";}
+    if (action === "type-select") {state.typeId = component.values[0]; return "Ticket type selected.";}
+    if (action === "refresh") {await tickets.refreshPanel(guild, state.panelId); return "Panel refreshed.";}
+
     if (action === "add-type") {
       const customId = menuId("ticket","type-modal", interaction.id);
       const submitted = await showConfigModal(component, new discord.ModalBuilder()
@@ -5742,19 +5838,81 @@ async function handleTicketMenu(interaction) {
         .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
           .setCustomId("description").setLabel("Description").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(100))), customId);
       if (!submitted) {return;}
-      tickets.addTicketType(guild.id, state.panelId, {
+      const type = tickets.addTicketType(guild.id, state.panelId, {
         name:submitted.fields.getTextInputValue("name"),
         description:submitted.fields.getTextInputValue("description") || null
       });
+      state.typeId = type?.type_id ?? state.typeId;
       await tickets.refreshPanel(guild, state.panelId);
       return "Ticket type added.";
     }
-    if (action === "refresh") {await tickets.refreshPanel(guild, state.panelId); return "Panel refreshed.";}
-    if (action === "delete-panel") {await tickets.deletePanel(guild, state.panelId); state.panelId = null; return "Panel deleted.";}
-    if (action === "delete-type") {
-      tickets.deleteTicketType(guild.id, state.panelId, component.values[0]);
-      await tickets.refreshPanel(guild, state.panelId);
-      return "Ticket type deleted.";
+
+    if (action === "manage") {
+      const choice = component.values?.[0];
+      if (choice === "delete-panel") {
+        if (!state.panelId) {return "Choose a panel first.";}
+        await tickets.deletePanel(guild, state.panelId);
+        state.panelId = null; state.typeId = null;
+        return "Panel deleted.";
+      }
+      if (choice === "delete-type") {
+        if (!state.panelId || !state.typeId) {return "Choose a panel and ticket type first.";}
+        tickets.deleteTicketType(guild.id, state.panelId, state.typeId);
+        state.typeId = null;
+        await tickets.refreshPanel(guild, state.panelId);
+        return "Ticket type deleted.";
+      }
+      if (choice === "clear-questions") {
+        if (!state.panelId || !state.typeId) {return "Choose a panel and ticket type first.";}
+        tickets.clearTicketFormQuestions(guild.id, state.panelId, state.typeId);
+        return "Form questions cleared for the selected ticket type.";
+      }
+      if (choice === "add-question") {
+        if (!state.panelId || !state.typeId) {return "Choose a panel and ticket type first.";}
+        const customId = menuId("ticket","q-modal", interaction.id);
+        const submitted = await showConfigModal(component, new discord.ModalBuilder()
+          .setCustomId(customId).setTitle("Ticket form question")
+          .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("label").setLabel("Question").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(45)))
+          .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("kind").setLabel("Type: short or paragraph").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(10).setValue("short")))
+          .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("required").setLabel("Required? yes/no").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(3).setValue("yes")))
+          .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("placeholder").setLabel("Placeholder (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(100)))
+        , customId);
+        if (!submitted) {return;}
+        const kind = submitted.fields.getTextInputValue("kind").trim().toLowerCase() === "paragraph" ? "paragraph" : "short";
+        const required = submitted.fields.getTextInputValue("required").trim().toLowerCase() !== "no";
+        tickets.addTicketFormQuestion(guild.id, state.panelId, state.typeId, {
+          label: submitted.fields.getTextInputValue("label"),
+          kind, required,
+          placeholder: submitted.fields.getTextInputValue("placeholder") || null
+        });
+        return "Form question added. Users will answer it before opening this ticket type. If there are many questions, they may answer several short forms in a row; Discord allows up to 15 minutes to finish an interaction, so keep forms short when possible.";
+      }
+      if (choice === "add-route") {
+        if (!state.panelId || !state.typeId) {return "Choose a panel and ticket type first.";}
+        const questions = tickets.listTicketFormQuestions(guild.id, state.panelId, state.typeId);
+        if (!questions.length) {return "Add at least one form question before creating a route.";}
+        const customId = menuId("ticket","route-modal", interaction.id);
+        const submitted = await showConfigModal(component, new discord.ModalBuilder()
+          .setCustomId(customId).setTitle("Simple ticket route")
+          .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("question").setLabel("Question number (1 = first question)").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(2).setValue("1")))
+          .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("answer").setLabel("If answer is (exact text)").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(100).setValue("yes")))
+          .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("kind").setLabel("Target: channel/category/default").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(10).setValue("channel")))
+          .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("target").setLabel("Target channel/category ID").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(30)))
+        , customId);
+        if (!submitted) {return;}
+        const qIndex = Math.max(1, Number(submitted.fields.getTextInputValue("question") || 1)) - 1;
+        const q = questions[qIndex];
+        if (!q) {return "That question number was not found.";}
+        const kind = ["channel","category","default"].includes(submitted.fields.getTextInputValue("kind").trim().toLowerCase()) ? submitted.fields.getTextInputValue("kind").trim().toLowerCase() : "default";
+        const target = submitted.fields.getTextInputValue("target").trim() || null;
+        tickets.addTicketFormRoute(guild.id, state.panelId, state.typeId, {
+          conditions:[{questionId:q.question_id, op:"eq", value:submitted.fields.getTextInputValue("answer")}],
+          targetKind:kind,
+          targetChannelId:kind === "channel" ? target : null,
+          targetCategoryId:kind === "category" ? target : null
+        });
+        return "Route added. Routes are checked in order; the first matching route wins, otherwise the ticket type default is used.";
+      }
     }
   });
 }
@@ -5765,29 +5923,29 @@ function renderNavigationMenu(guild, state) {
   state.messageId = record?.message_id ?? null;
   const embed = new discord.EmbedBuilder().setTitle("BargazBot Navigation")
     .setDescription((state.status ? `${state.status}\n\n` : "") +
-      `Messages: ${messages.length} • Selected: ${record ? `\`${record.message_id}\`` : "None"}\n` +
-      `Title: **${record?.title ?? "—"}** • Auto update: **${record?.auto_update ? "on" : "off"}**`)
+      `Navigation messages: ${messages.length}\n` +
+      `Selected: ${record ? `**${record.title}** in <#${record.channel_id}>` : "None"}\n` +
+      `Auto update: **${record?.auto_update ? "on" : "off"}**`)
     .setTimestamp();
-  const rows = [buildSelectRow(menuId("navigation","create"), configChannelOptions(guild), {
-    placeholder:"Create a message in a channel"
-  })];
+  const rows = [
+    buildChannelSelectRow(menuId("navigation","create"), {placeholder:"Post a new navigation message in..."}),
+  ];
   if (messages.length) {
     rows.push(buildSelectRow(menuId("navigation","select"), messages.slice(0,25).map(item =>
-      menuOption(item.title, item.message_id)), {placeholder:"Choose a navigation message"}));
+      menuOption(item.title || item.message_id, item.message_id, `#${guild.channels.cache.get(item.channel_id)?.name ?? item.channel_id}`)
+    ), {placeholder:"Choose a navigation message to edit"}));
+    rows.push(buildSelectRow(menuId("navigation","delete-pick"), messages.slice(0,25).map(item =>
+      menuOption(`Delete: ${item.title || item.message_id}`, item.message_id)
+    ), {placeholder:"Delete a navigation message"}));
   }
   if (record) {
-    rows.push(buildSelectRow(menuId("navigation","channels"), [...guild.channels.cache.values()]
-      .filter(channel => channel.isTextBased() && !channel.isThread() && channel.type === discord.ChannelType.GuildText)
-      .slice(0,24).map(channel => menuOption(channel.name, channel.id)), {
-        placeholder:"Set listed channels", minValues:0, maxValues:24
-      }));
+    rows.push(buildChannelSelectRow(menuId("navigation","channels"), {placeholder:"Choose channels to include", minValues:0, maxValues:25}));
     rows.push(buildButtonRow([
-      {customId:menuId("navigation","title"), label:"Edit title", style:"primary"},
-      {customId:menuId("navigation","refresh"), label:"Refresh", style:"secondary"},
-      {customId:menuId("navigation","delete"), label:"Delete", style:"danger"}
+      {customId:menuId("navigation","title"), label:"Edit title/description", style:"primary"},
+      {customId:menuId("navigation","refresh"), label:"Refresh", style:"secondary"}
     ]));
   }
-  return {embeds:[embed], components:rows};
+  return {embeds:[embed], components:rows.slice(0,5)};
 }
 
 async function handleNavigationMenu(interaction) {
@@ -5803,7 +5961,7 @@ async function handleNavigationMenu(interaction) {
     }
     if (action === "select") {state.messageId = component.values[0]; return "Message selected.";}
     if (action === "channels") {
-      const count = navigation.setNavigationChannels(guild, state.messageId, component.values);
+      const count = navigation.setNavigationChannels(guild, state.messageId, component.values ?? []);
       await navigation.refreshNavigationMessage(interaction.client, guild.id, state.messageId);
       return `${count} channel(s) listed.`;
     }
@@ -5812,12 +5970,8 @@ async function handleNavigationMenu(interaction) {
       const customId = menuId("navigation","title-modal", interaction.id);
       const submitted = await showConfigModal(component, new discord.ModalBuilder()
         .setCustomId(customId).setTitle("Navigation message")
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("title").setLabel("Title").setStyle(discord.TextInputStyle.Short)
-          .setValue(record?.title ?? "Server navigation").setRequired(true).setMaxLength(100)))
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("description").setLabel("Description").setStyle(discord.TextInputStyle.Paragraph)
-          .setValue(record?.description ?? "").setRequired(false).setMaxLength(500))), customId);
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("title").setLabel("Title").setStyle(discord.TextInputStyle.Short).setValue(record?.title ?? "Server navigation").setRequired(true).setMaxLength(100)))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("description").setLabel("Description").setStyle(discord.TextInputStyle.Paragraph).setValue(record?.description ?? "").setRequired(false).setMaxLength(500))), customId);
       if (!submitted) {return;}
       navigation.updateNavigationMessageSettings(guild.id, state.messageId, {
         title:submitted.fields.getTextInputValue("title"),
@@ -5827,7 +5981,12 @@ async function handleNavigationMenu(interaction) {
       return "Navigation message updated.";
     }
     if (action === "refresh") {await navigation.refreshNavigationMessage(interaction.client, guild.id, state.messageId); return "Message refreshed.";}
-    if (action === "delete") {await navigation.deleteNavigationMessage(guild, state.messageId); state.messageId = null; return "Message deleted.";}
+    if (action === "delete-pick") {
+      const messageId = component.values[0];
+      await navigation.deleteNavigationMessage(guild, messageId);
+      if (state.messageId === messageId) {state.messageId = null;}
+      return "Navigation message deleted.";
+    }
   });
 }
 

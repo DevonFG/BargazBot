@@ -5,6 +5,7 @@ import * as notifications from "./notifications.js";
 import * as counters from "./counters.js";
 import * as roleRewards from "./roleRewards.js";
 import * as log from "./appLogger.js";
+import * as apiLimits from "./apiLimits.js";
 import {isShutdownRequested} from "bargaz/shutdownCoordinator.js";
 
 const DEFAULT_CHECK_INTERVAL = 300000;
@@ -19,8 +20,6 @@ let cleanupInterval = null;
 
 let monitorRunning = false;
 let metadataRunning = false;
-
-
 
 const activeJobs = new Set();
 let stopping = false;
@@ -47,12 +46,14 @@ function describePlatformError(error) {
     : message;
 }
 
-async function runPostPollHooks() {
+async function runPostPollHooks(options = {}) {
   if (!client || stopping || isShutdownRequested()) {return;}
   for (const guild of client.guilds.cache.values()) {
-    await roleRewards.recheckRewards(client, guild.id).catch(error =>
-      log.warn("BargazBot reward recheck failed:", guild.id, error)
-    );
+    if (!options.skipRewards) {
+      await roleRewards.recheckRewards(client, guild.id).catch(error =>
+        log.warn("BargazBot reward recheck failed:", guild.id, error)
+      );
+    }
     await counters.refreshSocialCounters(guild.id).catch(error =>
       log.warn("BargazBot social counter refresh failed:", guild.id, error)
     );
@@ -351,9 +352,9 @@ export async function checkPlatforms() {
 
   try {
     const settled = await trackJob(Promise.allSettled([
-      checkYouTube(),
-      checkTwitch(),
-      checkKick()
+      apiLimits.isLimited("youtube") ? Promise.resolve([]) : checkYouTube(),
+      apiLimits.isLimited("twitch")  ? Promise.resolve([]) : checkTwitch(),
+      apiLimits.isLimited("kick")    ? Promise.resolve([]) : checkKick()
     ]));
 
     for (const outcome of settled) {
@@ -407,7 +408,7 @@ async function refreshYouTubeMetadata() {
       }
     }
 
-    await runPostPollHooks();
+    await runPostPollHooks({skipRewards:true});
 
   } catch (error) {
     log.error(

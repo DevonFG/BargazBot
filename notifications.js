@@ -8,6 +8,7 @@ import * as featureSettings from "./featureSettings.js";
 import * as guildLogger     from "./guildLogger.js";
 import * as kick            from "./kick.js";
 import * as log             from "./appLogger.js";
+import * as apiLimits       from "./apiLimits.js";
 import * as roleRewards     from "./roleRewards.js";
 import * as twitch          from "./twitch.js";
 import * as youtube         from "./youtube.js";
@@ -1420,15 +1421,18 @@ function getNewestRefreshResult(results,channelId) {
   eligible.sort((a,b) => Number(Boolean(b.content.isLive)) - Number(Boolean(a.content.isLive)) || getTime(b.content) - getTime(a.content));
   return eligible[0] ?? null;
 }
-
 export async function refreshSubscription(client,guildId,nickname,platform) {
   const subscription = findGuildSubscription(guildId,nickname,platform);
   if (!subscription) return {success:false,reason:"not-found"};
-  const key = subscription.platform;
-  const platformModule = getPlatformModule(key);
-  const allowance = reserveRefresh(guildId,key);
-  if (!allowance.allowed) {return {success:false,reason:"refresh-limit",remaining:0,retryAt:allowance.retryAt};}
-  let messagePosted = false;
+  const platformModule = getPlatformModule(subscription.platform);
+  if (!platformModule) return {success:false,reason:"unsupported"};
+
+  const provider = String(subscription.platform ?? "").toLowerCase();
+  const limit = apiLimits.limitDetails(provider);
+  if (limit.limited) {
+    return {success:false, reason:"limited", message:apiLimits.formatLimitMessage(provider, limit)};
+  }
+
   try {
     let refreshResult = null;
     if (typeof platformModule.refreshChannel === "function") {refreshResult = await platformModule.refreshChannel(subscription.channelId);} 

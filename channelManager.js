@@ -15,6 +15,7 @@ const CHANNEL_COLUMNS = {
   logs:          "logs_channel_id",
   updates:       "updates_channel_id",
   status:        "status_channel_id",
+  alerts:        "alerts_channel_id",
   tickets:       "tickets_channel_id",
   "bot-detection": "bot_detection_channel_id"
 };

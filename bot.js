@@ -9,6 +9,7 @@ import * as channelManager  from "./channelManager.js";
 import * as commands        from "./commands.js";
 import * as appLogger       from "./appLogger.js";
 import * as owner           from "./owner.js";
+import * as apiLimits       from "./apiLimits.js";
 import * as platformManager from "./platformManager.js";
 import * as entitlements    from "./entitlements.js";
 import * as permissions     from "./permissions.js";
@@ -459,8 +460,28 @@ Events
 onceBotEvent("clientReady", async () => {
   owner.initOwnerSystem(client);
   guildLogger.setClient(client);
+  apiLimits.setApiLimitAlertHandler(async payload => {
+    const recovered = Boolean(payload.recovered);
+    const isAuth = payload.kind === "auth";
+    const name = payload.provider === "youtube" ? "YouTube" : payload.provider === "twitch" ? "Twitch" : "Kick";
+    const title = recovered
+      ? `${name} limit recovered`
+      : isAuth ? `${name} authentication failed` : `${name} limit reached`;
+    const reset = payload.resetAt ? new Date(Number(payload.resetAt)).toLocaleString("en-US", {timeZone:"UTC", hour12:true, month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}) + " UTC" : "later";
+    const description = recovered
+      ? `${payload.reason ?? "The provider is available again."}\n\nAffected features should resume automatically.`
+      : isAuth
+        ? `${payload.reason ?? "Authentication failed."}\n\nAffected features may pause until credentials or app access are fixed. Check the provider app credentials/scopes on the Pi.`
+        : `${payload.reason ?? "A provider limit was hit."}\n\nAffected features may pause until **${reset}**. This should recover automatically after the limit resets.`;
+    await owner.broadcastAlert(client, {
+      title,
+      description,
+      color: recovered ? 0x57F287 : isAuth ? 0xED4245 : 0xFEE75C,
+      fields: [{name:"Provider", value:name, inline:true}, {name:"Kind", value:String(payload.kind ?? "unknown"), inline:true}]
+    });
+  });
   startUpsNotifier(client);
-  startDiagnosticsNotifier();
+  startDiagnosticsNotifier(client);
   console.log(`Logged in as ${client.user.tag}!`);
 
   const memberLists = new Map();
@@ -668,6 +689,18 @@ onBotEvent("interactionCreate", async interaction => {
     }
     return;
   }
+  if (interaction.isModalSubmit()) {
+    const id = interaction.customId ?? "";
+    try {
+      if (id.startsWith("ticket:form:")) {
+        await tickets.handleComponent(interaction);
+        return;
+      }
+    } catch (error) {
+      appLogger.error("Modal handling failed:", interaction.guildId, error);
+    }
+  }
+
   if (interaction.isButton() || interaction.isAnySelectMenu()) {
     const id = interaction.customId ?? "";
     try {
@@ -676,8 +709,7 @@ onBotEvent("interactionCreate", async interaction => {
         handled = await reactionRoles.handleComponent(interaction);
       } else if (id.startsWith("verify:")) {
         handled = await verification.handleComponent(interaction);
-      } else if (id.startsWith("ticket:type:") || id.startsWith("ticket:open:") ||
-                 id.startsWith("ticket:close:") || id === "ticket:none") {
+      } else if (id.startsWith("ticket:")) {
         handled = await tickets.handleComponent(interaction);
       }
     } catch (error) {

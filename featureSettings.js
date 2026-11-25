@@ -82,17 +82,28 @@ function logChange(target, action, detail = "") {
   log.info("BargazBot config change:", action, "target:", target ?? "dm", detail);
 }
 
-function configLog(guildId, actorId, action, detail = "") {
+function configLog(guildId, actorId, action, detail = "", fields = null) {
   logChange(guildId, action, detail);
   if (!guildId) {return;}
   guildLogger.logConfigurationChange(guildId, {
     title:"BargazBot feature configuration changed",
     description:`A BargazBot configuration setting was changed${actorId ? ` by <@${actorId}>` : ""}.`,
-    fields:[
-      {name:"Setting", value:action.slice(0, 1024), inline:true},
-      ...(detail ? [{name:"Detail", value:detail.slice(0, 1024), inline:false}] : [])
-    ]
+    fields:Array.isArray(fields) && fields.length
+      ? fields.slice(0, 25)
+      : [
+          {name:"Setting", value:action.slice(0, 1024), inline:true},
+          ...(detail ? [{name:"Detail", value:detail.slice(0, 1024), inline:false}] : [])
+        ]
   }).catch(() => {});
+}
+
+export function logFeatureConfigBatch(guildId, actorId, action, changes = []) {
+  const lines = changes.filter(Boolean).slice(0, 20).map(change => `• ${String(change).slice(0, 120)}`);
+  const detail = lines.join("\n") || "No changes.";
+  configLog(guildId, actorId, action, detail, [
+    {name:"Setting", value:action.slice(0, 1024), inline:true},
+    {name:"Changes", value:detail.slice(0, 1024), inline:false}
+  ]);
 }
 
 export function updateFeatureConfig(guildId, feature, patch, actorId = null, fallback = {}) {
@@ -176,8 +187,9 @@ export function setFeatureReplyType(guildId, feature, responseType, actorId = nu
 
 export function setAllFeatureToggles(guildId, enabled, actorId = null) {
   const value = Boolean(enabled);
-  for (const feature of FEATURE_KEYS) {setFeatureSetting(guildId, feature, {enabled:value});}
-  configLog(guildId, actorId, "all feature toggles", `enabled=${value}`);
+  const features = FEATURE_KEYS.filter(feature => feature !== "dm");
+  for (const feature of features) {setFeatureSetting(guildId, feature, {enabled:value});}
+  configLog(guildId, actorId, "all feature toggles", `enabled=${value}; excluded=dm`);
   return value;
 }
 

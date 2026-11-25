@@ -19,6 +19,33 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.12.0-beta.3 - Nov 25
+- Added accountLinking.js with OAuth account linking flows, provider configuration checks, redirect/state handling, and token exchange support for linked platform accounts.
+- Added auditMonitor.js to poll guild audit logs and report relevant audit events through the logging system.
+- Added autoMod.js with per-guild auto-mod rules, rule scope/exclusion storage, rule creation/update/delete helpers, and message moderation handling.
+- Added navigation.js for guild navigation messages, channel/description configuration, embed/payload building, and navigation message refresh handling.
+- Added reactionRoles.js for reaction-role message storage, style/mode/wrap configuration, option management, and reaction-role message lifecycle handling.
+- Added roleRewards.js for role reward storage, reward create/update/delete helpers, reward grant/revoke handling, and metric-based reward application.
+- Added tickets.js for ticket panel/type storage, panel creation/update/delete handling, ticket channel workflows, and ticket interaction support.
+- Added verification.js with verification setup, permission application, verification payload/bot-detection message handling, member verification, and disable flows.
+- Added webhooks.js with webhook provider registration, event dedupe IDs, signature verification, and webhook request handling.
+- Added apiLimits.js to track YouTube, Twitch, and Kick quota, rate, and authentication limits, pause affected feature calls, and send hit/recovery alerts with cooldowns.
+- Added OWNER_ALERTS_CHANNEL support in .env.example, owner bargaz-alerts channel handling, and guild alert-channel subscription support with owner-priority, best-effort broadcast delivery.
+- Added guild status broadcast handling for subscribed status channels, including shutdown messages that do not block bot shutdown on slow or failed guild sends.
+- Updated bot.js to wire new feature modules, audit/webhook/ticket/reaction-role/verification handling, API limit alert broadcasting, diagnostics client wiring, and ticket modal/component routing.
+- Updated commands.js with new/expanded command menus and flows for account linking, auto-mod, navigation, reaction roles, role rewards, tickets, verification, webhooks/feature configuration, and related interaction handling.
+- Updated /ticket with panel channel selection, support for multiple ticket panels, ghost-panel cleanup handling, optional per-type ticket forms/questions, modal-based form answering, and conditional ticket routing targets.
+- Updated /verification setup labels to plain language and added a second bot-detection screen with Off, Kick, and Ban options.
+- Updated /invite with new feature groupings, identical-permission overlap handling, and a Basic features option for the lowest-permission feature set.
+- Updated /features-config with Alerts channel configuration, All On/Off controls, grouped configuration-change logging, and removal of DM from guild feature toggles.
+- Updated channelManager.js and storage.js with alerts/tickets channel support, guild alert-channel settings, and ticket form/route/answer storage tables.
+- Updated counters.js, youtube.js, kick.js, notifications.js, and platformManager.js to use shared API limit guards, cached social metric results, and safer polling/refresh behavior; Kick metric lookups include an app-token slug fallback for live, viewer, and subscriber data when user-token channel endpoints are unavailable.
+- Updated featureSettings.js and guildLogger.js with grouped configuration-change logging support and configuration-change logging enabled by default when logs are enabled.
+- Updated utils.js with shared channel select row helpers and updated navigation/commands to use native Discord channel picker/select inputs where applicable.
+- Updated diagnosticsNotifier.js, owner.js, and upsNotifier.js to support client-aware diagnostics, owner alert channel delivery, and prioritized status/alert broadcast behavior.
+- Updated package.json and package-lock.json for beta.2/beta.3 dependency and version metadata changes.
+
+
 ## v26.12.0-beta.2 - Nov 24
 - Changes listed under next commit.
 
