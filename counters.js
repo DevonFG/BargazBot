@@ -18,7 +18,7 @@ const SOCIAL_METRICS = new Set(["followers", "subscribers", "live", "viewers", "
 const COUNTER_TYPES = new Set(["accounts", "bots", "members", "role", ...SOCIAL_METRICS]);
 const TYPE_NAMES = {
   accounts:"Accounts", bots:"Bots", members:"Members",
-  followers:"Followers", subscribers:"Subscribers", live:"Live status",
+  followers:"Followers/Subscribers", subscribers:"Subscribers/Members", live:"Live status",
   viewers:"Viewers", videos:"Videos", clips:"Clips", views:"Views"
 };
 
@@ -251,7 +251,7 @@ export function countCounter(counter, guild) {
 
 export function counterChannelName(counter, guild) {
   const label = counter.label || defaultLabel(counter, guild);
-  return `${label}: ${formatCounterValue(counter, countCounter(counter, guild))}`.replace(/[\r\n]+/g, " ").slice(0, 100);
+  return `${label} ${formatCounterValue(counter, countCounter(counter, guild))}`.replace(/[\r\n]+/g, " ").slice(0, 100);
 }
 
 async function createCounterChannel(guild, counter) {
@@ -516,7 +516,7 @@ async function resolveCounterValue(counter, guild) {
 async function resolvedCounterName(counter, guild) {
   const label = counter.label || defaultLabel(counter, guild);
   const value = await resolveCounterValue(counter, guild);
-  return `${label}: ${formatCounterValue(counter, value)}`.replace(/[\r\n]+/g, " ").slice(0, 100);
+  return `${label} ${formatCounterValue(counter, value)}`.replace(/[\r\n]+/g, " ").slice(0, 100);
 }
 
 function resolveGuild(guildOrId) {

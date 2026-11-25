@@ -387,10 +387,18 @@ export function getBirthdayCommands(ownerType, ownerId) {
   return rows.map(row => formatBirthdayCommand(row, ownerType));
 }
 
+function validateBirthdayTrigger(trigger) {
+  const value = String(trigger ?? "").trim();
+  if (!value) {throw new Error("Trigger text is required.");}
+  if (/\s/.test(value)) {throw new Error("Trigger text cannot include spaces.");}
+  if (!value.includes("!")) {throw new Error("Trigger text must include !.");}
+  return value;
+}
+
 export function createBirthdayCommand(ownerType, ownerId, data = {}) {
   ensureTimerTables();
   const owner = birthdayOwner(ownerType, ownerId);
-  const trigger = String(data.triggerText ?? data.trigger_text ?? "birthday").trim() || "birthday";
+  const trigger = validateBirthdayTrigger(data.triggerText ?? data.trigger_text ?? "!birthday");
   const dateFormat = String(data.dateFormat ?? data.date_format ?? "MM-DD");
   const announceMode = normalizeAnnounceMode(data.announceMode ?? data.announce_mode ?? data.mode ?? "day");
   const announceDaysBefore = Math.max(0, Number(data.announceDaysBefore ?? data.announce_days_before ?? 7) || 7);
@@ -454,7 +462,7 @@ export function updateBirthdayCommand(ownerType, ownerId, commandId, data = {}) 
   if (!existing) {return null;}
 
   const trigger = data.triggerText !== undefined || data.trigger_text !== undefined
-    ? String(data.triggerText ?? data.trigger_text).trim()
+    ? validateBirthdayTrigger(data.triggerText ?? data.trigger_text)
     : existing.triggerText;
   const dateFormat = data.dateFormat !== undefined || data.date_format !== undefined
     ? String(data.dateFormat ?? data.date_format)

@@ -349,16 +349,11 @@ const commands = [
   new discord.SlashCommandBuilder()
     .setName("set-timezone")
     .setDescription("Set the timezone used for timers and birthdays.")
-    .addStringOption(option => option
-      .setName("timezone")
-      .setDescription("An IANA name, e.g. America/New_York. Omit to pick from a menu.")
-      .setRequired(false)
-    )
     .setIntegrationTypes(0, 1)
     .setContexts(0, 1),
   new discord.SlashCommandBuilder()
-    .setName("invite")
-    .setDescription("Get an invite link for BargazBot with the permissions you need.")
+    .setName("update")
+    .setDescription("Get an install/update link for BargazBot with the permissions you need.")
     .setIntegrationTypes(0, 1)
     .setContexts(0, 1),
 ]
@@ -889,7 +884,7 @@ export async function handleInteraction(interaction) {
       case "dm-help":         await handleDmHelp(interaction); break;
       case "set-timezone":    await handleSetTimezone(interaction); break;
       case "counter":         await handleCounter(interaction); break;
-      case "invite":          await handleInvite(interaction); break;
+      case "update":          await handleInvite(interaction); break;
       case "dm":              await handleDm(interaction); break;
       case "test":            await handleTest(interaction); break;
       default: await interaction.reply({content: "BargazBot does not recognize this command.", flags: discord.MessageFlags.Ephemeral});
@@ -997,7 +992,7 @@ async function handleHelp(interaction) {
 async function handleDmHelp(interaction) {
   const dmCommandNames = new Set([
     "ping", "help", "stats", "data", "dm", "dm-help",
-    "notification", "entitlement", "timers", "set-timezone", "invite"
+    "notification", "entitlement", "timers", "set-timezone", "update"
   ]);
   const catalog = buildCommandCatalog().filter(command => dmCommandNames.has(command.name));
   const requested = interaction.options.getString("command")?.replace(/^\//, "").trim().toLowerCase();
@@ -1060,32 +1055,24 @@ function featureChannelRows(guildId) {
 }
 
 function renderFeatureChannelMenu(guildId, state) {
-  const guild = state.guild;
-  const embed = new discord.EmbedBuilder()
-    .setTitle("BargazBot Features")
-    .setColor(0x5865F2)
-    .setTimestamp();
+  const embed = new discord.EmbedBuilder().setTitle("BargazBot Features").setColor(0x5865F2).setTimestamp();
   let rows = [];
+  const pageSize = 10;
+  const keys = GUILD_FEATURE_KEYS;
+  const pageCount = Math.max(1, Math.ceil(keys.length / pageSize));
+  state.featurePage = Math.max(0, Math.min(pageCount - 1, Number(state.featurePage) || 0));
 
   if (state.page === "home") {
     const settings = channelManager.getChannelAssignments(guildId) ?? {};
-    const summary = CHANNEL_PURPOSES
-      .map(([, label, key]) => `${label}: ${settings[key] ? `<#${settings[key]}>` : "Not set"}`)
-      .join("\n");
-    const featureLines = GUILD_FEATURE_KEYS
-      .map(key => `${featureSettings.isFeatureEnabled(guildId, key) ? "✅" : "❌"} ${FEATURE_LABELS[key] ?? key}`)
-      .join("\n");
-    embed.setDescription((state.status ? `${state.status}\n\n` : "") +
-      `**Channels**\n${summary}\n\n**Features**\n${featureLines}`);
+    const summary = CHANNEL_PURPOSES.map(([, label, key]) => `${label}: ${settings[key] ? `<#${settings[key]}>` : "Not set"}`).join("\n");
+    embed.setDescription((state.status ? `${state.status}\n\n` : "") + `**Channels**\n${summary}\n\nUse **Feature toggles** to turn features on/off, or **Responses** for reply visibility.`);
     rows = [buildSelectRow(menuId("features-config","home"), featureChannelRows(guildId), {placeholder:"Choose a setup area"})];
   }
 
   if (state.page === "channels") {
     embed.setDescription("Pick a feature, then pick a channel. Use **Clear** to unset it.");
     rows = [
-      buildSelectRow(menuId("features-config","channels"), CHANNEL_PURPOSES.map(([key,label,,]) =>
-        menuOption(label, key)
-      ), {placeholder:"Choose a feature channel"}),
+      buildSelectRow(menuId("features-config","channels"), CHANNEL_PURPOSES.map(([key,label]) => menuOption(label, key)), {placeholder:"Choose a feature channel"}),
       buildButtonRow([{customId:menuId("features-config","channels","back"), label:"Back", style:"secondary"}])
     ];
   }
@@ -1103,30 +1090,30 @@ function renderFeatureChannelMenu(guildId, state) {
   }
 
   if (state.page === "features") {
-    embed.setDescription("Select features, then choose an action. DM settings are per-user and are not changed here.");
+    const slice = keys.slice(state.featurePage * pageSize, state.featurePage * pageSize + pageSize);
+    const lines = slice.map(key => `${featureSettings.isFeatureEnabled(guildId, key) ? "✅" : "❌"} ${FEATURE_LABELS[key] ?? key}`).join("\n");
+    embed.setDescription((state.status ? `${state.status}\n\n` : "") + `**Feature toggles** (page ${state.featurePage + 1}/${pageCount})\n${lines}\n\nSelect a feature, then choose Yes/No.`);
     rows = [
-      buildSelectRow(menuId("features-config","features"), GUILD_FEATURE_KEYS.map(key =>
-        menuOption(FEATURE_LABELS[key] ?? key, key, featureSettings.isFeatureEnabled(guildId, key) ? "On" : "Off", featureSettings.isFeatureEnabled(guildId, key))
-      ), {placeholder:"Choose features", minValues:1, maxValues:Math.min(GUILD_FEATURE_KEYS.length,25)}),
-      buildSelectRow(menuId("features-config","features","toggle"), [
-        menuOption("Turn selected on", "on"),
-        menuOption("Turn selected off", "off"),
-        menuOption("Turn all on", "all-on"),
-        menuOption("Turn all off", "all-off"),
-        menuOption("Reset all to defaults", "reset")
-      ], {placeholder:"Apply action"}),
-      buildSelectRow(menuId("features-config","features","response"), [
-        menuOption("Message", "message", "Visible to everyone"),
-        menuOption("Ephemeral", "ephemeral", "Only the command user sees it")
-      ], {placeholder:"Set response type for selected features"}),
-      buildButtonRow([{customId:menuId("features-config","features","back"), label:"Back", style:"secondary"}])
+      buildSelectRow(menuId("features-config","features","pick"), slice.map(key =>
+        menuOption(FEATURE_LABELS[key] ?? key, key, featureSettings.isFeatureEnabled(guildId, key) ? "Currently on" : "Currently off")
+      ), {placeholder:"Choose a feature"}),
+      buildButtonRow([
+        {customId:menuId("features-config","features","prev"), label:"Prev", style:"secondary", disabled:state.featurePage <= 0},
+        {customId:menuId("features-config","features","next"), label:"Next", style:"secondary", disabled:state.featurePage >= pageCount - 1},
+        {customId:menuId("features-config","features","yes"), label:"Yes / On", style:"success", disabled:!state.feature},
+        {customId:menuId("features-config","features","no"), label:"No / Off", style:"danger", disabled:!state.feature}
+      ]),
+      buildButtonRow([
+        {customId:menuId("features-config","features","all-on"), label:"All on", style:"success"},
+        {customId:menuId("features-config","features","all-off"), label:"All off", style:"secondary"},
+        {customId:menuId("features-config","features","reset"), label:"Reset defaults", style:"secondary"},
+        {customId:menuId("features-config","features","back"), label:"Back", style:"secondary"}
+      ])
     ];
   }
 
   if (state.page === "responses") {
-    embed.setDescription(
-      `Command default: **${featureSettings.getCommandResponseType(guildId)}**\n\nChanging all response types does not change the command default.`
-    );
+    embed.setDescription(`Command default: **${featureSettings.getCommandResponseType(guildId)}**\n\nChoose whether command replies are visible to everyone (Message) or only the user (Ephemeral).`);
     rows = [
       buildSelectRow(menuId("features-config","responses","command"), [
         menuOption("Message", "message", "Visible command replies"),
@@ -1145,7 +1132,7 @@ function renderFeatureChannelMenu(guildId, state) {
 
 async function handleFeaturesConfig(interaction) {
   if (!await requireCommandAccess(interaction, "features-config", "setup")) {return;}
-  const state = {page:"home", purpose:null, status:null, features:[], guild:interaction.guild};
+  const state = {page:"home", purpose:null, status:null, feature:null, featurePage:0, guild:interaction.guild};
   await interaction.deferReply({flags:discord.MessageFlags.Ephemeral});
   await interaction.editReply(renderFeatureChannelMenu(interaction.guild.id, state));
   const collector = createCommandCollector(await interaction.fetchReply(), {time:300000});
@@ -1155,7 +1142,7 @@ async function handleFeaturesConfig(interaction) {
     const action = parts[1];
     try {
       if (action === "back") {state.page = "home"; state.status = null; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
-      if (action === "home") {state.page = component.values?.[0] ?? "home"; state.status = null; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+      if (action === "home") {state.page = component.values?.[0] ?? "home"; state.status = null; state.feature = null; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
 
       if (action === "channels" && parts[2] !== "pick" && parts[2] !== "clear") {
         if (parts[2] === "back") {state.page = "home"; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
@@ -1177,47 +1164,35 @@ async function handleFeaturesConfig(interaction) {
       }
 
       if (action === "features") {
-        if (parts[2] === "back") {state.page = "home"; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
-        if (component.values && !parts[2]) {state.features = component.values ?? []; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
-        const choice = component.values?.[0];
-
-        if (parts[2] === "toggle") {
-          if (choice === "reset") {
-            featureSettings.resetFeatureSettings(interaction.guild.id, interaction.user.id);
-            if (state.features.includes("entitlement")) {
-              entitlements.removeGuildAllocations(interaction.user.id, interaction.guild.id);
-              entitlements.clearInstallerAutoAllocation(interaction.guild.id, interaction.user.id);
-            }
-            state.status = "Feature settings restored to defaults.";
-          } else if (choice === "all-on" || choice === "all-off") {
-            const enabled = choice === "all-on";
-            featureSettings.setAllFeatureToggles(interaction.guild.id, enabled, interaction.user.id);
-            state.status = enabled ? "All guild features turned on." : "All guild features turned off (DM settings were not changed).";
-          } else {
-            const changes = [];
-            for (const feature of state.features) {
-              featureSettings.setFeatureSetting(interaction.guild.id, feature, {enabled: choice === "on"});
-              changes.push(`${FEATURE_LABELS[feature] ?? feature}: ${choice === "on" ? "on" : "off"}`);
-              if (feature === "entitlement") {
-                if (choice === "on") {entitlements.ensureUser({id: interaction.user.id}); entitlements.autoAllocateInstaller(interaction.guild.id, interaction.user.id);}
-                if (choice === "off") {entitlements.removeGuildAllocations(interaction.user.id, interaction.guild.id); entitlements.clearInstallerAutoAllocation(interaction.guild.id, interaction.user.id);}
-              }
-            }
-            featureSettings.logFeatureConfigBatch(interaction.guild.id, interaction.user.id, "feature toggles", changes);
-            state.status = `Updated ${state.features.length} feature(s).`;
+        if (parts[2] === "back") {state.page = "home"; state.feature = null; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+        if (parts[2] === "pick") {state.feature = component.values?.[0] ?? null; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+        if (parts[2] === "prev" || parts[2] === "next") {state.featurePage = Math.max(0, state.featurePage + (parts[2] === "next" ? 1 : -1)); await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+        const setOne = (key, enabled) => {
+          featureSettings.setFeatureSetting(interaction.guild.id, key, {enabled});
+          if (key === "entitlement") {
+            if (enabled) {entitlements.ensureUser({id:interaction.user.id}); entitlements.autoAllocateInstaller(interaction.guild.id, interaction.user.id);}
+            else {entitlements.removeGuildAllocations(interaction.user.id, interaction.guild.id); entitlements.clearInstallerAutoAllocation(interaction.guild.id, interaction.user.id);}
           }
+        };
+        if (parts[2] === "yes" || parts[2] === "no") {
+          if (!state.feature) {state.status = "Choose a feature first."; await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;}
+          const enabled = parts[2] === "yes";
+          setOne(state.feature, enabled);
+          featureSettings.logFeatureConfigBatch(interaction.guild.id, interaction.user.id, "feature toggle", [`${FEATURE_LABELS[state.feature] ?? state.feature}: ${enabled ? "on" : "off"}`]);
+          state.status = `**${FEATURE_LABELS[state.feature] ?? state.feature}** is now **${enabled ? "On" : "Off"}**.`;
+          await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;
         }
-
-        if (parts[2] === "response") {
-          const changes = [];
-          for (const feature of state.features) {
-            featureSettings.setFeatureSetting(interaction.guild.id, feature, {responseType: choice});
-            changes.push(`${FEATURE_LABELS[feature] ?? feature}: ${choice}`);
-          }
-          featureSettings.logFeatureConfigBatch(interaction.guild.id, interaction.user.id, "feature response types", changes);
-          state.status = `Set response type for ${state.features.length} feature(s).`;
+        if (parts[2] === "all-on" || parts[2] === "all-off") {
+          const enabled = parts[2] === "all-on";
+          featureSettings.setAllFeatureToggles(interaction.guild.id, enabled, interaction.user.id);
+          state.status = enabled ? "All guild features turned on." : "All guild features turned off (DM settings were not changed).";
+          await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;
         }
-
+        if (parts[2] === "reset") {
+          featureSettings.resetFeatureSettings(interaction.guild.id, interaction.user.id);
+          state.status = "Feature settings restored to defaults.";
+          await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;
+        }
         await component.update(renderFeatureChannelMenu(interaction.guild.id, state)); return;
       }
 
@@ -1239,8 +1214,8 @@ async function handleFeaturesConfig(interaction) {
       await component.update(renderFeatureChannelMenu(interaction.guild.id, state));
     } catch (error) {
       log.error("Feature configuration menu error:", error);
-      await component.reply({content:"The feature menu encountered an error.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
-      collector.stop("error");
+      if (component.replied || component.deferred) {await component.followUp({content:"The feature menu encountered an error.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});}
+      else {await component.reply({content:"The feature menu encountered an error.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});}
     }
   });
   collector.on("end", async () => {await interaction.editReply({components:[]}).catch(() => {});});
@@ -1251,75 +1226,84 @@ function loggingCategoryChoices() {
   return Object.entries(logging.LOG_CATEGORIES).map(([value, definition]) => ({name: definition.name, value}));
 }
 
-// Builds the logging settings embed
-// settings = Object returned by logging.getLogSettings()
-function buildLoggingEmbed(settings, logsChannelId) {
-  const description = Object.entries(settings)
-    .map(([, setting]) => `${setting.enabled ? "✅" : "❌"} **${setting.name}**${setting.isOverride ? " (custom)" : ""}`)
-    .join("\n");
-
+function buildLoggingEmbed(settings, logsChannelId, state = {}) {
+  const entries = Object.entries(settings);
+  const pageSize = 10;
+  const pageCount = Math.max(1, Math.ceil(entries.length / pageSize));
+  const page = Math.max(0, Math.min(pageCount - 1, Number(state.page) || 0));
+  const slice = entries.slice(page * pageSize, page * pageSize + pageSize);
+  const description = slice.map(([, setting]) => `${setting.enabled ? "✅" : "❌"} **${setting.name}**${setting.isOverride ? " (custom)" : ""}`).join("\n");
   return new discord.EmbedBuilder()
     .setTitle("BargazBot Logging")
-    .setDescription(description)
+    .setDescription(`${state.status ? `${state.status}\n\n` : ""}${description}\n\nPage ${page + 1}/${pageCount}`)
     .addFields({name:"Log channel", value: logsChannelId ? `<#${logsChannelId}>` : "Not configured"})
     .setFooter({text:"Use /features-config > Channels to change the log channel."})
     .setTimestamp();
 }
 
-// Builds the logging category menu
-// settings = Object returned by logging.getLogSettings()
-function buildLoggingMenu(settings) {
-  return new discord.ActionRowBuilder().addComponents(
-    new discord.StringSelectMenuBuilder()
-      .setCustomId("logging:category")
-      .setPlaceholder("Select a category to toggle")
-      .addOptions(
-        Object.entries(settings).map(([value, setting]) => ({
-          label: setting.name,
-          value,
-          description: `${setting.enabled ? "Enabled" : "Disabled"}${setting.isOverride ? " - custom" : " - default"}`
-        }))
-      )
-  );
+function buildLoggingComponents(settings, state = {}) {
+  const entries = Object.entries(settings);
+  const pageSize = 10;
+  const pageCount = Math.max(1, Math.ceil(entries.length / pageSize));
+  const page = Math.max(0, Math.min(pageCount - 1, Number(state.page) || 0));
+  const slice = entries.slice(page * pageSize, page * pageSize + pageSize);
+  return [
+    buildSelectRow(menuId("logging","category"), slice.map(([value, setting]) => menuOption(setting.name, value, setting.enabled ? "Currently on" : "Currently off")), {placeholder:"Choose a logging category"}),
+    buildButtonRow([
+      {customId:menuId("logging","prev"), label:"Prev", style:"secondary", disabled:page <= 0},
+      {customId:menuId("logging","next"), label:"Next", style:"secondary", disabled:page >= pageCount - 1},
+      {customId:menuId("logging","yes"), label:"Yes / On", style:"success", disabled:!state.category},
+      {customId:menuId("logging","no"), label:"No / Off", style:"danger", disabled:!state.category}
+    ])
+  ];
 }
 
-// Opens the logging category menu
-// interaction = ChatInputCommandInteraction
 async function handleLogging(interaction) {
   if (!await requireCommandAccess(interaction, "logging", "setup")) {return;}
   await handleLoggingView(interaction);
 }
 
-// Displays the server's logging categories and toggles them from the menu
-// interaction = ChatInputCommandInteraction
 async function handleLoggingView(interaction) {
   const getChannelId = () => channelManager.getChannelAssignments(interaction.guild.id)?.logs_channel_id;
-  const settings = logging.getLogSettings(interaction.guild.id);
-  await interaction.reply({embeds:[buildLoggingEmbed(settings, getChannelId())], components:[buildLoggingMenu(settings)], flags:discord.MessageFlags.Ephemeral});
+  const state = {page:0, category:null, status:null};
+  const render = () => {
+    const settings = logging.getLogSettings(interaction.guild.id);
+    return {embeds:[buildLoggingEmbed(settings, getChannelId(), state)], components:buildLoggingComponents(settings, state), flags:discord.MessageFlags.Ephemeral};
+  };
+  await interaction.reply(render());
   const message = await interaction.fetchReply();
   const collector = createCommandCollector(message, {time: 300000});
   onCommandComponent(collector, async component => {
     if (component.user.id !== interaction.user.id) {await component.reply({content: "Only the person who opened this menu can use it.", flags: discord.MessageFlags.Ephemeral}); return;}
-    if (!permissions.canUseCommand(component.member, "logging", "set")) {await component.reply({content: "You do not have permission to change logging settings.", flags: discord.MessageFlags.Ephemeral}); return;}
     try {
-      const category = component.values[0];
-      const enabled  = !logging.getLogSettings(interaction.guild.id)[category].enabled;
-      logging.setCategoryEnabled(interaction.guild.id, category, enabled);
-      const updated = logging.getLogSettings(interaction.guild.id);
-      await component.update({embeds:[buildLoggingEmbed(updated, getChannelId())], components:[buildLoggingMenu(updated)]});
-      await logging.logConfigurationChange(interaction.guild, {
-        user: interaction.user,
-        title: "BargazBot Logging Changed",
-        description: `${interaction.user} changed a BargazBot logging category.`,
-        fields: [
-          {name:"Category", value: updated[category].name, inline: true},
-          {name:"Enabled",  value: enabled ? "Yes" : "No",    inline: true}
-        ]
-      }).catch(error => console.error("Failed to log logging change:", error));
+      const parts = parseMenuId(component.customId);
+      const action = parts[1];
+      if (action === "category") {state.category = component.values?.[0] ?? null; state.status = null; await component.update(render()); return;}
+      if (action === "prev" || action === "next") {state.page = Math.max(0, state.page + (action === "next" ? 1 : -1)); await component.update(render()); return;}
+      if (!permissions.canUseCommand(component.member, "logging", "set")) {await component.reply({content: "You do not have permission to change logging settings.", flags: discord.MessageFlags.Ephemeral}); return;}
+      if (action === "yes" || action === "no") {
+        if (!state.category) {state.status = "Choose a category first."; await component.update(render()); return;}
+        const enabled = action === "yes";
+        logging.setCategoryEnabled(interaction.guild.id, state.category, enabled);
+        const updated = logging.getLogSettings(interaction.guild.id);
+        state.status = `**${updated[state.category]?.name ?? state.category}** is now **${enabled ? "On" : "Off"}**.`;
+        await component.update(render());
+        await logging.logConfigurationChange(interaction.guild, {
+          user: interaction.user,
+          title: "BargazBot Logging Changed",
+          description: `${interaction.user} changed a BargazBot logging category.`,
+          fields: [
+            {name:"Category", value: updated[state.category]?.name ?? state.category, inline: true},
+            {name:"Enabled",  value: enabled ? "Yes" : "No", inline: true}
+          ]
+        }).catch(error => console.error("Failed to log logging change:", error));
+        return;
+      }
+      await component.update(render());
     } catch (error) {
       console.error("Logging menu error:", error);
-      if (!component.replied && !component.deferred) {await component.reply({content: "The logging menu encountered an error.", flags: discord.MessageFlags.Ephemeral}).catch(() => {});}
-      collector.stop("error");
+      if (component.replied || component.deferred) {await component.followUp({content: "The logging menu encountered an error.", flags: discord.MessageFlags.Ephemeral}).catch(() => {});}
+      else {await component.reply({content: "The logging menu encountered an error.", flags: discord.MessageFlags.Ephemeral}).catch(() => {});}
     }
   });
   collector.on("end", async (_, reason) => {if (reason === "shutdown") {return;} await interaction.editReply({components: []}).catch(() => {});});
@@ -4154,11 +4138,7 @@ async function showConfigModal(source, modal, customId) {
     time: 300000
   }).catch(() => null);
   await source.showModal(modal);
-  const result = await submitted;
-  if (result && !result.deferred && !result.replied) {
-    await result.deferUpdate().catch(() => {});
-  }
-  return result;
+  return await submitted;
 }
 
 function configChannelOptions(guild, includeNone = false) {
@@ -4491,7 +4471,7 @@ async function handleTimers(interaction) {
 
   const defaultDraft = section => section === "timer"
     ? {name:"Reminder", schedule:"", message:"Reminder: {name}", channelId:null, timeZone:"", enabled:true}
-    : {name:"Birthday command", triggerText:"", dateFormat:"MM-DD", message:"Happy birthday, {user}!", channelId:null, timeZone:"", enabled:true};
+    : {name:"Birthday command", triggerText:"!birthday", dateFormat:"MM-DD", message:"Happy birthday, {user}!", channelId:null, timeZone:"", enabled:true};
 
   const fromItem = (section, item) => section === "timer"
     ? {name:item.name, schedule:item.schedule, message:item.message, channelId:item.channelId, timeZone:item.timeZone ?? "", enabled:item.enabled}
@@ -4513,7 +4493,7 @@ async function handleTimers(interaction) {
       rows = [
         buildSelectRow(menuId("timers", "section"), [
           menuOption("Timers", "timer", "One-shot and recurring reminders", state.section === "timer"),
-          menuOption("Birthday commands", "birthday", "Custom birthday triggers", state.section === "birthday")
+          menuOption("Birthday commands", "birthday", "Custom birthday triggers like !birthday", state.section === "birthday")
         ], {placeholder:"Choose a section"}),
         buildSelectRow(menuId("timers", "home"), [
           menuOption("Add", "add", "Create a new item"),
@@ -4611,10 +4591,10 @@ async function handleTimers(interaction) {
         ]
       : [
           row("name", "Command name", draft.name, discord.TextInputStyle.Short, true, 100),
-          row("triggerText", "Trigger text", draft.triggerText, discord.TextInputStyle.Short, true, 100),
-          row("dateFormat", "Date format", draft.dateFormat, discord.TextInputStyle.Short, true, 50),
+          row("triggerText", "Trigger (must include !, no spaces)", draft.triggerText, discord.TextInputStyle.Short, true, 100, "!birthday"),
+          row("dateFormat", "Date format", draft.dateFormat, discord.TextInputStyle.Short, true, 50, "MM-DD"),
           row("message", "Message", draft.message, discord.TextInputStyle.Paragraph, true, 1000),
-          row("timeZone", "Timezone (optional)", draft.timeZone, discord.TextInputStyle.Short, false, 100)
+          row("timeZone", "Timezone (blank = server timezone)", draft.timeZone, discord.TextInputStyle.Short, false, 100)
         ];
 
     const submitted = await showConfigModal(source, new discord.ModalBuilder()
@@ -4630,6 +4610,10 @@ async function handleTimers(interaction) {
     else {
       draft.triggerText = submitted.fields.getTextInputValue("triggerText").trim();
       draft.dateFormat = submitted.fields.getTextInputValue("dateFormat").trim() || "MM-DD";
+      try {timers.validateBirthdayTrigger(draft.triggerText);} catch (error) {
+        await submitted.reply({content:error.message, flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+        return false;
+      }
     }
     return submitted;
   };
@@ -4665,7 +4649,8 @@ async function handleTimers(interaction) {
           const submitted = await openTextModal(component);
           if (!submitted) {return;}
           state.page = "pickers";
-          await submitted.update(render());
+          if (submitted.deferred || submitted.replied) {await interaction.editReply(render()).catch(() => {});}
+          else {await submitted.update(render()).catch(async () => {await interaction.editReply(render()).catch(() => {});});}
           return;
         }
         state.page = "pick";
@@ -4686,12 +4671,13 @@ async function handleTimers(interaction) {
           await component.update(render());
           return;
         }
-        state.itemId = item.timerId;
+        state.itemId = item.timerId ?? item.id;
         state.draft = fromItem(state.section, item);
         const submitted = await openTextModal(component);
         if (!submitted) {return;}
         state.page = "pickers";
-        await submitted.update(render());
+        if (submitted.deferred || submitted.replied) {await interaction.editReply(render()).catch(() => {});}
+        else {await submitted.update(render()).catch(async () => {await interaction.editReply(render()).catch(() => {});});}
         return;
       }
       if (action === "channel") {
@@ -4787,9 +4773,7 @@ async function handleAutopublish(interaction) {
   if (!interaction.guild) {await interaction.reply({content:"This command can only be used in a Discord server.", flags:discord.MessageFlags.Ephemeral}); return;}
   if (!await requireCommandAccess(interaction,"autopublish","setup")) {return;}
   const mode = interaction.options.getString("mode", true);
-  if (mode !== "list") {
-    featureSettings.setFeatureEnabled(interaction.guild.id, "autopublish", true, interaction.user.id);
-  }
+  if (mode !== "list") {featureSettings.setFeatureEnabled(interaction.guild.id, "autopublish", true, interaction.user.id);}
 
   if (mode === "list") {
     const channels = autopublish.getChannels(interaction.guild.id);
@@ -4801,110 +4785,111 @@ async function handleAutopublish(interaction) {
   }
 
   if (mode === "channel") {
-    const channels = [...interaction.guild.channels.cache.values()]
-      .filter(channel => channel.type === discord.ChannelType.GuildAnnouncement)
-      .slice(0, 25);
-    if (!channels.length) {await interaction.reply({content:"This server has no announcement channels.", flags:discord.MessageFlags.Ephemeral}); return;}
-    const enabled = new Set(autopublish.list(interaction.guild.id).channels);
-    const embed = new discord.EmbedBuilder().setTitle("Auto publish channels")
-      .setDescription("Choose the announcement channels BargazBot should publish from.");
-    const row = buildSelectRow(menuId("autopublish","channels"), channels.map(channel =>
-      menuOption(channel.name, channel.id, enabled.has(channel.id) ? "Enabled" : "Disabled", enabled.has(channel.id))
-    ), {placeholder:"Choose announcement channels", minValues:0, maxValues:Math.min(channels.length, 25)});
-
-    await interaction.reply({embeds:[embed], components:[row], flags:discord.MessageFlags.Ephemeral});
+    const all = autopublish.getChannels(interaction.guild.id);
+    const enabled = new Set(all.filter(c => c.enabled).map(c => c.channelId));
+    const render = (status = null) => {
+      const rows = all.slice(0, 25);
+      return {
+        embeds:[new discord.EmbedBuilder().setTitle("Auto publish channels")
+          .setDescription((status ? `${status}\n\n` : "") + "Choose announcement channels to publish from. You can search in the channel picker.\n\n" + (all.length ? all.map(row => `${row.enabled ? "✅" : "❌"} <#${row.channelId}>`).join("\n") : "No configured channels yet."))
+          .setTimestamp()],
+        components:[
+          buildChannelSelectRow(menuId("autopublish","pick"), {placeholder:"Add/remove announcement channels", minValues:0, maxValues:25, channelTypes:[discord.ChannelType.GuildAnnouncement]}),
+          buildButtonRow([
+            {customId:menuId("autopublish","clear"), label:"Clear all", style:"danger", disabled:all.length === 0},
+            {customId:menuId("autopublish","done"), label:"Done", style:"secondary"}
+          ])
+        ],
+        flags:discord.MessageFlags.Ephemeral
+      };
+    };
+    await interaction.reply(render());
     const message = await interaction.fetchReply();
     const collector = createCommandCollector(message, {time:300000});
     onCommandComponent(collector, async component => {
       if (component.user.id !== interaction.user.id) {await component.reply({content:"Only you can use this menu.", flags:discord.MessageFlags.Ephemeral}); return;}
-      const selected = component.values ?? [];
-      autopublish.clearAutopublish(interaction.guild.id);
-      for (const channelId of selected) {autopublish.setChannel(interaction.guild.id, channelId, true);}
-      await component.update({content:`Auto publish configured for ${selected.length} channel(s).`, embeds:[], components:[]});
-      collector.stop("saved");
+      const action = parseMenuId(component.customId)[1];
+      if (action === "pick") {
+        const selected = component.values ?? [];
+        for (const channelId of selected) {
+          const isEnabled = enabled.has(channelId);
+          autopublish.setChannel(interaction.guild.id, channelId, !isEnabled);
+          if (isEnabled) {enabled.delete(channelId);} else {enabled.add(channelId);}
+        }
+        const fresh = autopublish.getChannels(interaction.guild.id);
+        all.splice(0, all.length, ...fresh);
+        await component.update(render(selected.length ? `Toggled ${selected.length} channel(s).` : null));
+        return;
+      }
+      if (action === "clear") {autopublish.clearAutopublish(interaction.guild.id); all.splice(0, all.length); enabled.clear(); await component.update(render("Auto publish channels cleared.")); return;}
+      if (action === "done") {await component.update({content:`Auto publish configured for ${enabled.size} channel(s).`, embeds:[], components:[]}); collector.stop("saved");}
     });
     return;
   }
 
   await interaction.deferReply({flags:discord.MessageFlags.Ephemeral});
   const announcementChannels = [...interaction.guild.channels.cache.values()].filter(channel =>
-    channel.type === discord.ChannelType.GuildAnnouncement &&
-    channel.isTextBased() &&
-    !channel.isThread()
+    channel.type === discord.ChannelType.GuildAnnouncement && channel.isTextBased() && !channel.isThread()
   );
   autopublish.setAll(interaction.guild.id, true);
-  for (const channel of announcementChannels) {
-    autopublish.setChannel(interaction.guild.id, channel.id, true);
-  }
+  for (const channel of announcementChannels) {autopublish.setChannel(interaction.guild.id, channel.id, true);}
   const result = await autopublish.publishAll(interaction.client, interaction.guild.id);
-  await interaction.editReply({
-    content:`Configured ${announcementChannels.length} announcement channel(s). Published ${result.published} message(s), ${result.failed} failed.`,
-    flags:discord.MessageFlags.Ephemeral
-  });
+  await interaction.editReply({content:`Configured ${announcementChannels.length} announcement channel(s). Published ${result.published} message(s), ${result.failed} failed.`});
 }
 
 async function handleSetTimezone(interaction) {
   const isDm = !interaction.guild;
   const scopeKey = isDm ? interaction.user.id : interaction.guild.id;
-
-  const currentValue = () => isDm
-    ? (featureSettings.getUserDmSettings(scopeKey).timezone ?? "UTC")
-    : (featureSettings.getGuildTimezone(scopeKey) ?? "UTC");
-
-  const saveValue = value => isDm
-    ? featureSettings.updateUserDmSetting(scopeKey, {timezone:value}, interaction.user.id)
-    : featureSettings.setGuildTimezone(scopeKey, value);
-
+  const currentValue = () => isDm ? (featureSettings.getUserDmSettings(scopeKey).timezone ?? "UTC") : (featureSettings.getGuildTimezone(scopeKey) ?? "UTC");
+  const saveValue = value => isDm ? featureSettings.updateUserDmSetting(scopeKey, {timezone:value}, interaction.user.id) : featureSettings.setGuildTimezone(scopeKey, value);
   const requested = interaction.options.getString("timezone")?.trim();
-
   if (requested) {
-    if (!isValidTimezone(requested)) {
-      await interaction.reply({content:"That is not a valid IANA timezone name.", flags:discord.MessageFlags.Ephemeral});
-      return;
-    }
+    if (!isValidTimezone(requested)) {await interaction.reply({content:"That is not a valid IANA timezone name. Example: `America/New_York`.", flags:discord.MessageFlags.Ephemeral}); return;}
     saveValue(requested);
     await interaction.reply({content:`Timezone set to \`${requested}\`.`, flags:discord.MessageFlags.Ephemeral});
     return;
   }
 
-  const current = currentValue();
   const label = isDm ? "Your BargazBot timezone" : "This server's BargazBot timezone";
-  const embed = new discord.EmbedBuilder()
-    .setTitle("BargazBot Timezone")
-    .setDescription(`${label}: **${current}**\n\nTimers and birthdays use this timezone when the timer has no timezone of its own.`)
-    .setTimestamp();
+  const render = (status = null) => {
+    const current = currentValue();
+    const choices = dmTimezoneOptions(current === "UTC" ? null : current).map(zone => menuOption(zone, zone, zone === current ? "Current" : ""));
+    choices.push(menuOption("UTC (default)", "reset", "Reset to UTC"));
+    return {
+      embeds:[new discord.EmbedBuilder().setTitle("BargazBot Timezone")
+        .setDescription(`${status ? `${status}\n\n` : ""}${label}: **${current}**\n\nTimers and birthdays use this timezone when they don't have their own timezone. If you change this later, timers/birthdays without their own timezone follow the server timezone.`)
+        .setTimestamp()],
+      components:[
+        buildSelectRow(menuId("timezone", isDm ? "user" : "guild"), choices.slice(0,25), {placeholder:"Choose a timezone"}),
+        buildButtonRow([{customId:menuId("timezone","custom"), label:"Enter timezone", style:"primary"}])
+      ],
+      flags:discord.MessageFlags.Ephemeral
+    };
+  };
 
-  const choices = dmTimezoneOptions(current === "UTC" ? null : current)
-    .map(zone => menuOption(zone, zone, zone === current ? "Current" : ""));
-  choices.push(menuOption("UTC (default)", "reset", "Reset to UTC"));
-
-  await interaction.reply({
-    embeds:[embed],
-    components:[buildSelectRow(menuId("timezone", isDm ? "user" : "guild"), choices, {placeholder:"Choose a timezone"})],
-    flags:discord.MessageFlags.Ephemeral
-  });
-
+  await interaction.reply(render());
   const message = await interaction.fetchReply();
-  const collector = interaction.channel.createMessageComponentCollector({
-    filter:item => item.user.id === interaction.user.id && item.message?.id === message.id,
-    time:300000
-  });
-
+  const collector = createCommandCollector(message, {time:300000});
   onCommandComponent(collector, async component => {
-    const choice = component.values?.[0];
-    const value = choice === "reset" ? "UTC" : choice;
-    if (!value || !isValidTimezone(value)) {
-      await component.reply({content:"That is not a valid IANA timezone name.", flags:discord.MessageFlags.Ephemeral}).catch(() => {});
+    if (component.user.id !== interaction.user.id) {await component.reply({content:"Only the person who opened this menu can use it.", flags:discord.MessageFlags.Ephemeral}); return;}
+    const action = parseMenuId(component.customId)[1];
+    if (action === "custom") {
+      const customId = menuId("timezone","modal", interaction.id);
+      const submitted = await showConfigModal(component, new discord.ModalBuilder().setCustomId(customId).setTitle("Set timezone")
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("timezone").setLabel("IANA timezone").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(100).setPlaceholder("America/New_York").setValue(currentValue()))), customId);
+      if (!submitted) {return;}
+      const value = submitted.fields.getTextInputValue("timezone").trim();
+      if (!isValidTimezone(value)) {await submitted.reply({content:"That is not a valid IANA timezone name. Example: `America/New_York`.", flags:discord.MessageFlags.Ephemeral}).catch(() => {}); return;}
+      saveValue(value);
+      if (submitted.deferred || submitted.replied) {await interaction.editReply(render(`Timezone set to \`${value}\`.`)).catch(() => {});}
+      else {await submitted.update(render(`Timezone set to \`${value}\`.`)).catch(async () => {await interaction.editReply(render(`Timezone set to \`${value}\`.`)).catch(() => {});});}
       return;
     }
+    const choice = component.values?.[0];
+    const value = choice === "reset" ? "UTC" : choice;
+    if (!value || !isValidTimezone(value)) {await component.reply({content:"That is not a valid IANA timezone name.", flags:discord.MessageFlags.Ephemeral}).catch(() => {}); return;}
     saveValue(value);
-    await component.update({
-      embeds:[new discord.EmbedBuilder()
-        .setTitle("BargazBot Timezone")
-        .setDescription(`${label}: **${value}**`)
-        .setTimestamp()],
-      components:[]
-    });
+    await component.update(render(`Timezone set to \`${value}\`.`)).catch(() => {});
   });
 }
 
@@ -4983,53 +4968,41 @@ function buildInviteUrl(applicationId, permissions, userInstall) {
 async function handleInvite(interaction) {
   const groups = inviteFeatureGroups();
   const basicKeys = Object.keys(INVITE_PURPOSE_PERMISSIONS).filter(key => (INVITE_PURPOSE_PERMISSIONS[key] ?? []).length === 0);
-  const options = [
-    menuOption("All (recommended)", "all", "Every BargazBot permission"),
-    menuOption("Basic features", "group:basic", `Least permissions: ${basicKeys.map(k => FEATURE_LABELS[k] ?? k).join(", ").slice(0, 90)}`),
-    ...groups.filter(g => g.bits.length > 0).map(group => menuOption(
-      group.keys.length === 1 ? (FEATURE_LABELS[group.keys[0]] ?? group.keys[0]) : `${FEATURE_LABELS[group.keys[0]] ?? group.keys[0]} + ${group.keys.length - 1} more`,
-      `group:${group.sig}`,
-      group.keys.map(k => FEATURE_LABELS[k] ?? k).join(", ").slice(0, 100)
-    ))
-  ].slice(0, 25);
-
-  await interaction.reply({
-    embeds:[new discord.EmbedBuilder()
-      .setTitle("Invite BargazBot")
-      .setDescription(
-        "Choose what you want to use BargazBot for. I'll build an invite link with the permissions for it.\n\n" +
-        "**All** is the normal invite with every permission BargazBot uses.\n" +
-        "**Basic features** includes features that need only the base bot permissions."
-      )
-      .setTimestamp()],
-    components:[buildSelectRow(menuId("invite"), options, {
-      placeholder:"What will you use BargazBot for?",
-      maxValues:Math.min(options.length, 25)
-    })],
-    flags:discord.MessageFlags.Ephemeral
-  });
-
+  const groupOptions = groups.filter(g => g.bits.length > 0).map(group => menuOption(
+    group.keys.length === 1 ? (FEATURE_LABELS[group.keys[0]] ?? group.keys[0]) : `${FEATURE_LABELS[group.keys[0]] ?? group.keys[0]} + ${group.keys.length - 1} more`,
+    `group:${group.sig}`,
+    group.keys.map(k => FEATURE_LABELS[k] ?? k).join(", ").slice(0, 100)
+  ));
+  const options = [menuOption("All (recommended)", "all", "Every BargazBot permission"), menuOption("Basic features", "group:basic", `Least permissions: ${basicKeys.map(k => FEATURE_LABELS[k] ?? k).join(", ").slice(0, 90)}`), ...groupOptions].slice(0,25);
+  const render = (status = null, selected = []) => {
+    const embed = new discord.EmbedBuilder().setTitle("Update / Install BargazBot").setColor(0x5865F2).setTimestamp()
+      .setDescription((status ? `${status}\n\n` : "") + "Choose what you want BargazBot to do. I’ll build an install/update link with only those permissions.\n\n**All** = every permission BargazBot uses.\n**Basic features** = least permissions (base bot permissions only).\nOther options group features that share the same permission set.");
+    const rows = [buildSelectRow(menuId("update","pick"), options, {placeholder:"Choose features/permission groups", minValues:1, maxValues:Math.min(options.length,25)})];
+    rows.push(buildButtonRow([{customId:menuId("update","build"), label:"Build link", style:"success", disabled:selected.length === 0}, {customId:menuId("update","all"), label:"All permissions", style:"primary"}]));
+    return {embeds:[embed], components:rows, flags:discord.MessageFlags.Ephemeral};
+  };
+  const state = {selected:[]};
+  await interaction.reply(render(null, state.selected));
   const message = await interaction.fetchReply();
-  const collector = interaction.channel.createMessageComponentCollector({
-    filter:item => item.user.id === interaction.user.id && item.message?.id === message.id,
-    time:300000
-  });
-
+  const collector = createCommandCollector(message, {time:300000});
   onCommandComponent(collector, async component => {
-    const selected = component.values ?? [];
+    if (component.user.id !== interaction.user.id) {await component.reply({content:"Only the person who opened this menu can use it.", flags:discord.MessageFlags.Ephemeral}); return;}
+    const action = parseMenuId(component.customId)[1];
+    if (action === "pick") {state.selected = component.values ?? []; await component.update(render(`Selected ${state.selected.length} option(s).`, state.selected)); return;}
+    const selected = action === "all" ? ["all"] : state.selected;
+    if (!selected.length) {await component.reply({content:"Choose at least one option first.", flags:discord.MessageFlags.Ephemeral}); return;}
     const actualSelected = selected.includes("group:basic") ? [...new Set([...selected.filter(v => v !== "group:basic"), ...basicKeys.map(k => `group:${invitePermissionKey(k)}`)])] : selected;
     const {permissions, keys} = invitePermissionsFor(actualSelected, groups);
-    const applicationId = interaction.client.application.id;
     const labels = selected.includes("all") ? "all configured permissions" : keys.map(key => FEATURE_LABELS[key] ?? key).join(", ");
-    const serverUrl = buildInviteUrl(applicationId, permissions, false);
-    const userUrl = buildInviteUrl(applicationId, permissions, true);
+    const serverUrl = buildInviteUrl(interaction.client.application.id, permissions, false);
+    const userUrl = buildInviteUrl(interaction.client.application.id, permissions, true);
     await component.update({
-      embeds:[new discord.EmbedBuilder()
-        .setTitle("BargazBot invite")
-        .setDescription(`**Server invite** (${labels.slice(0, 300)}): [Add to a server](${serverUrl})\n\n[Add BargazBot to your DMs](${userUrl})`)
+      embeds:[new discord.EmbedBuilder().setTitle("BargazBot update/install link").setColor(0x5865F2)
+        .setDescription(`**Server install/update** (${labels.slice(0, 300)}): [Open link](${serverUrl})\n\n[Add BargazBot to your DMs](${userUrl})`)
         .setTimestamp()],
       components:[]
     });
+    collector.stop("built");
   });
 }
 
@@ -5118,7 +5091,8 @@ async function handleCounter(interaction) {
     state.page = "home";
     state.mode = null;
     state.draft = null;
-    await source.update(render());
+    if (source?.deferred || source?.replied) {await interaction.editReply(render()).catch(() => {});}
+    else {await source.update(render()).catch(async () => {await interaction.editReply(render()).catch(() => {});});}
   };
 
   const patchSelected = async (source, patch, message) => {
@@ -5130,7 +5104,8 @@ async function handleCounter(interaction) {
       state.status = `Could not update the counter: ${error.message}`;
     }
     state.page = state.mode === "add" ? "home" : "edit";
-    await source.update(render());
+    if (source?.deferred || source?.replied) {await interaction.editReply(render()).catch(() => {});}
+    else {await source.update(render()).catch(async () => {await interaction.editReply(render()).catch(() => {});});}
   };
 
   const askLabel = async source => {
@@ -5242,7 +5217,10 @@ async function handleCounter(interaction) {
             : []),
           menuOption("Delete counter", "delete", "Remove this counter")
         ], {placeholder:"Edit this counter"}),
-        backButton()
+        buildButtonRow([
+          {customId:menuId("counter","delete-btn"), label:"Delete counter", style:"danger"},
+          {customId:menuId("counter","back"), label:"Back", style:"secondary"}
+        ])
       ];
     }
 
@@ -5288,6 +5266,16 @@ async function handleCounter(interaction) {
         state.status = null;
         state.page = "edit";
         state.returnPage = "edit";
+        await component.update(render());
+        return;
+      }
+      if (action === "delete-btn") {
+        const counter = currentCounter();
+        await counters.deleteCounter(guild, state.selectedId);
+        await refreshAll();
+        state.status = `Deleted the **${counter?.label ?? counters.defaultLabel(counter, guild)}** counter.`;
+        state.page = "home";
+        state.selectedId = null;
         await component.update(render());
         return;
       }
@@ -5386,7 +5374,8 @@ async function handleCounter(interaction) {
         if (!submitted) {return;}
         state.roleQuery = submitted.fields.getTextInputValue("query").trim();
         state.rolePage = 0;
-        await submitted.update(render());
+        if (submitted.deferred || submitted.replied) {await interaction.editReply(render()).catch(() => {});}
+        else {await submitted.update(render()).catch(async () => {await interaction.editReply(render()).catch(() => {});});}
         return;
       }
       if (action === "role") {
@@ -5403,25 +5392,23 @@ async function handleCounter(interaction) {
       }
       if (action === "label-set") {await askLabel(component); return;}
       if (action === "label-default") {
-        if (state.mode === "add") {
-          state.draft.label = null;
-          await finishDraft(component);
-        } else {
-          await patchSelected(component, {label:null}, `Counter name reset to **${counters.defaultLabel(currentCounter(), guild)}**.`);
-        }
+        if (state.mode === "add") {state.draft.label = null; await finishDraft(component);}
+        else {await patchSelected(component, {label:null}, `Counter name reset to **${counters.defaultLabel(currentCounter(), guild)}**.`);}
         return;
       }
       if (action === "label-modal") {
         const label = component.fields?.getTextInputValue("label").trim() || null;
         if (state.mode === "add") {state.draft.label = label; await finishDraft(component);}
         else {await patchSelected(component, {label}, `Counter name set to **${label ?? counters.defaultLabel(currentCounter(), guild)}**.`);}
+        return;
       }
-    } catch (error) {
-      log.error("Counter menu error:", error);
-      state.status = `Error: ${error.message}`;
-      state.page = "home";
-      await component.update(render()).catch(() => {});
-    }
+      } catch (error) {
+        log.error("Counter menu error:", error);
+        state.status = `Error: ${error.message}`;
+        state.page = "home";
+        if (component.replied || component.deferred) {await interaction.editReply(render()).catch(() => {});}
+        else {await component.update(render()).catch(async () => {await interaction.editReply(render()).catch(() => {});});}
+      }
   });
 
   function openRolePage(returnPage) {
@@ -5572,83 +5559,122 @@ async function logFeatureTrail(interaction, title, fields = []) {
 function renderReactionRoleMenu(guild, state) {
   const record = state.messageId ? reactionRoles.getReactionRoleMessage(guild.id, state.messageId) : null;
   const options = state.messageId ? reactionRoles.listReactionRoleOptions(guild.id, state.messageId) : [];
-  const embed = new discord.EmbedBuilder().setTitle("BargazBot Reaction Roles")
+  const embed = new discord.EmbedBuilder().setTitle("BargazBot Reaction Roles").setColor(0x5865F2).setTimestamp()
     .setDescription((state.status ? `${state.status}\n\n` : "") +
-      `Message: ${state.messageId ? `\`${state.messageId}\`` : "Not selected"}\n` +
-      `Style: **${record?.style ?? "reactions"}** • Mode: **${record?.mode ?? "toggle"}**\n` +
+      `Message: ${state.messageId ? `\`${state.messageId}\`` : "Not selected"}${record?.channel_id ? ` in <#${record.channel_id}>` : ""}\n` +
+      `Nickname: **${record?.nickname ?? "None"}**\n` +
+      `Style: **${record?.style ?? "reactions"}** • Mode: **${record?.mode ?? "toggle"}** • Code wrap: **${record?.wrapCode ? "on" : "off"}**\n` +
       `Options: ${options.length}\n` +
-      options.map(option => `• ${option.emoji ? `${option.emoji} ` : ""}${option.label} → <@&${option.role_id}>`).join("\n"))
-    .setTimestamp();
-  const rows = [buildButtonRow([
-    {customId:menuId("reaction-role","message"), label:"Set message", style:"primary"},
-    {customId:menuId("reaction-role","option-add"), label:"Add option", style:"success", disabled:!state.messageId},
-    {customId:menuId("reaction-role","publish"), label:"Publish", style:"secondary", disabled:!state.messageId}
-  ])];
-  if (state.messageId) {
-    rows.push(buildSelectRow(menuId("reaction-role","style"), [
-      menuOption("Reactions","reactions"), menuOption("Buttons","buttons"), menuOption("Dropdown","dropdown")
-    ], {placeholder:"Display style"}));
-    rows.push(buildSelectRow(menuId("reaction-role","mode"), [
-      menuOption("Toggle","toggle"), menuOption("Add only","add"), menuOption("Remove only","remove")
-    ], {placeholder:"Role mode"}));
-    if (options.length) {
-      rows.push(buildSelectRow(menuId("reaction-role","option-remove"), options.map(option =>
-        menuOption(option.label, option.option_id)), {placeholder:"Remove an option"}));
-    }
+      options.slice(0,15).map(option => `• ${option.emoji ? `${option.emoji} ` : ""}${option.label} → <@&${option.role_id}>${option.group_label ? ` [${option.group_label}]` : ""}`).join("\n"));
+  const rows = [];
+  if (state.page === "create") {
+    embed.setDescription((state.status ? `${state.status}\n\n` : "") + "Choose the channel for the new reaction-role message.");
+    return {embeds:[embed], components:[buildChannelSelectRow(menuId("reaction-role","create-channel"), {placeholder:"Choose a channel"}), buildButtonRow([{customId:menuId("reaction-role","back"), label:"Back", style:"secondary"}])] };
   }
-  return {embeds:[embed], components:rows};
+  rows.push(buildButtonRow([
+    {customId:menuId("reaction-role","create"), label:"Create message", style:"success"},
+    {customId:menuId("reaction-role","message"), label:"Use existing message", style:"primary"},
+    {customId:menuId("reaction-role","edit-msg"), label:"Edit message/content", style:"secondary", disabled:!state.messageId},
+    {customId:menuId("reaction-role","publish"), label:"Publish", style:"secondary", disabled:!state.messageId}
+  ]));
+  if (state.messageId) {
+    rows.push(buildSelectRow(menuId("reaction-role","style"), [menuOption("Reactions","reactions"), menuOption("Buttons","buttons"), menuOption("Dropdown","dropdown")], {placeholder:"Display style"}));
+    rows.push(buildSelectRow(menuId("reaction-role","mode"), [menuOption("Toggle","toggle"), menuOption("Add only","add"), menuOption("Remove only","remove")], {placeholder:"Role mode"}));
+    rows.push(buildMentionableRow(menuId("reaction-role","role-pick"), {placeholder:"Select a role for next option (optional)", maxValues:1, minValues:0}));
+    rows.push(buildButtonRow([
+      {customId:menuId("reaction-role","option-add"), label:"Add option", style:"success"},
+      {customId:menuId("reaction-role","wrap"), label:record?.wrapCode ? "Disable code wrap" : "Enable code wrap", style:"secondary"},
+      {customId:menuId("reaction-role","back"), label:"Refresh", style:"secondary"}
+    ]));
+  }
+  if (options.length) {
+    rows.push(buildSelectRow(menuId("reaction-role","option-remove"), options.slice(0,25).map(option => menuOption(option.label, option.option_id, option.group_label ?? "Remove option")), {placeholder:"Remove an option"}));
+  }
+  return {embeds:[embed], components:rows.slice(0,5)};
 }
 
 async function handleReactionRoleMenu(interaction) {
   await featureMenu(interaction, "reaction-role", renderReactionRoleMenu, async (component, state) => {
     const action = parseMenuId(component.customId)[1];
+    const guild = interaction.guild;
+    if (action === "back") {return "Refreshed.";}
+    if (action === "role-pick") {state.pendingRoleId = component.values?.[0] ?? null; return state.pendingRoleId ? `Role <@&${state.pendingRoleId}> selected for next option.` : "Role selection cleared.";}
+    if (action === "create") {
+      state.page = "create";
+      return;
+    }
+    if (action === "create-channel") {
+      const channelId = component.values?.[0];
+      const customId = menuId("reaction-role","create-modal", interaction.id);
+      const submitted = await showConfigModal(component, new discord.ModalBuilder().setCustomId(customId).setTitle("Create reaction-role message")
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("nickname").setLabel("Nickname (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(80)))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("content").setLabel("Message content").setStyle(discord.TextInputStyle.Paragraph).setRequired(true).setMaxLength(1900).setValue("Choose a role below."))), customId);
+      if (!submitted) {return;}
+      const channel = await guild.channels.fetch(channelId).catch(() => null);
+      if (!channel?.isTextBased()) {return "That channel was not found.";}
+      const nickname = submitted.fields.getTextInputValue("nickname").trim() || null;
+      const content = submitted.fields.getTextInputValue("content").trim();
+      const msg = await channel.send({content, allowedMentions:{parse:[]}});
+      reactionRoles.ensureReactionRoleMessage(guild, channelId, msg.id, {nickname, content, style:"reactions", mode:"toggle", wrapCode:false});
+      state.messageId = msg.id; state.page = "main";
+      await logFeatureTrail(interaction, "Reaction-role message created", [{name:"Message", value:msg.id, inline:true}]);
+      return "Reaction-role message created.";
+    }
     if (action === "message") {
       const customId = menuId("reaction-role","message-modal", interaction.id);
-      const submitted = await showConfigModal(component, new discord.ModalBuilder()
-        .setCustomId(customId).setTitle("Reaction-role message")
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("channel").setLabel("Channel ID").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(30)))
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("message").setLabel("Message ID").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(30))), customId);
+      const submitted = await showConfigModal(component, new discord.ModalBuilder().setCustomId(customId).setTitle("Use existing message")
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("channel").setLabel("Channel ID").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(30)))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("message").setLabel("Message ID").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(30)))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("nickname").setLabel("Nickname (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(80))), customId);
       if (!submitted) {return;}
       const channelId = submitted.fields.getTextInputValue("channel").trim();
       const messageId = submitted.fields.getTextInputValue("message").trim();
-      const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
-      if (!channel?.isTextBased()) {return "That channel was not found.";}
-      if (!await channel.messages.fetch(messageId).catch(() => null)) {return "That message was not found.";}
-      reactionRoles.ensureReactionRoleMessage(interaction.guild, channelId, messageId);
+      const nickname = submitted.fields.getTextInputValue("nickname").trim() || null;
+      const channel = await guild.channels.fetch(channelId).catch(() => null);
+      if (!channel?.isTextBased() || !await channel.messages.fetch(messageId).catch(() => null)) {return "That channel/message was not found.";}
+      reactionRoles.ensureReactionRoleMessage(guild, channelId, messageId, {nickname});
       state.messageId = messageId;
-      await logFeatureTrail(interaction, "Reaction-role message set", [{name:"Message", value:messageId, inline:true}]);
       return "Reaction-role message set.";
     }
-    if (action === "style") {reactionRoles.setReactionRoleStyle(interaction.guild.id, state.messageId, component.values[0]); return "Style updated.";}
-    if (action === "mode") {reactionRoles.setReactionRoleMode(interaction.guild.id, state.messageId, component.values[0]); return "Mode updated.";}
+    if (action === "edit-msg") {
+      const record = reactionRoles.getReactionRoleMessage(guild.id, state.messageId);
+      const customId = menuId("reaction-role","edit-modal", interaction.id);
+      const submitted = await showConfigModal(component, new discord.ModalBuilder().setCustomId(customId).setTitle("Edit reaction-role message")
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("nickname").setLabel("Nickname").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(80).setValue(record?.nickname ?? "")))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("content").setLabel("Message content").setStyle(discord.TextInputStyle.Paragraph).setRequired(false).setMaxLength(1900).setValue(record?.content ?? ""))), customId);
+      if (!submitted) {return;}
+      reactionRoles.updateReactionRoleMessage(guild.id, state.messageId, {nickname:submitted.fields.getTextInputValue("nickname").trim() || null, content:submitted.fields.getTextInputValue("content")});
+      return "Message details updated. Use Publish to update the Discord message.";
+    }
+    if (action === "style") {reactionRoles.setReactionRoleStyle(guild.id, state.messageId, component.values[0]); return "Style updated.";}
+    if (action === "mode") {reactionRoles.setReactionRoleMode(guild.id, state.messageId, component.values[0]); return "Mode updated.";}
+    if (action === "wrap") {const record = reactionRoles.getReactionRoleMessage(guild.id, state.messageId); reactionRoles.updateReactionRoleMessage(guild.id, state.messageId, {wrapCode:!record?.wrapCode}); return "Code wrap updated.";}
     if (action === "option-add") {
       const customId = menuId("reaction-role","option-modal", interaction.id);
-      const submitted = await showConfigModal(component, new discord.ModalBuilder()
-        .setCustomId(customId).setTitle("Add reaction-role option")
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("label").setLabel("Label").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(100)))
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("emoji").setLabel("Emoji (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(100)))
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("role").setLabel("Role ID").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(30))), customId);
+      const submitted = await showConfigModal(component, new discord.ModalBuilder().setCustomId(customId).setTitle("Add reaction-role option")
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("label").setLabel("Label").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(100)))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("emoji").setLabel("Emoji (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(100)))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("role").setLabel("Role ID (or pick role above)").setStyle(discord.TextInputStyle.Short).setRequired(!state.pendingRoleId).setMaxLength(30).setValue(state.pendingRoleId ?? "")))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("group").setLabel("Group/menu label (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(100)))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("kind").setLabel("Kind: reaction/button/dropdown").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(20).setValue(reactionRoles.getReactionRoleMessage(guild.id, state.messageId)?.style ?? "reaction"))), customId);
       if (!submitted) {return;}
-      reactionRoles.addReactionRoleOption(interaction.guild.id, state.messageId, {
+      reactionRoles.addReactionRoleOption(guild.id, state.messageId, {
         label:submitted.fields.getTextInputValue("label"),
         emoji:submitted.fields.getTextInputValue("emoji") || null,
-        roleId:submitted.fields.getTextInputValue("role")
+        roleId:submitted.fields.getTextInputValue("role").trim() || state.pendingRoleId,
+        groupLabel:submitted.fields.getTextInputValue("group") || null,
+        menuKind:submitted.fields.getTextInputValue("kind").trim().toLowerCase() || null
       });
-      return "Option added.";
+      return "Option added. Use Publish to update the message.";
     }
-    if (action === "option-remove") {reactionRoles.removeReactionRoleOption(interaction.guild.id, state.messageId, component.values[0]); return "Option removed.";}
+    if (action === "option-remove") {reactionRoles.removeReactionRoleOption(guild.id, state.messageId, component.values[0]); return "Option removed. Use Publish to update the message.";}
     if (action === "publish") {
-      const record = reactionRoles.getReactionRoleMessage(interaction.guild.id, state.messageId);
-      const channel = await interaction.guild.channels.fetch(record.channel_id).catch(() => null);
+      const record = reactionRoles.getReactionRoleMessage(guild.id, state.messageId);
+      const channel = await guild.channels.fetch(record.channel_id).catch(() => null);
       const message = await channel?.messages?.fetch(state.messageId).catch(() => null);
       if (!message) {return "The message is no longer available.";}
-      await message.edit(reactionRoles.buildReactionRolePayload(interaction.guild.id, state.messageId));
-      await reactionRoles.addMessageReactions(interaction.client, interaction.guild.id, record.channel_id, state.messageId);
+      await message.edit(reactionRoles.buildReactionRolePayload(guild.id, state.messageId));
+      await reactionRoles.addMessageReactions(interaction.client, guild.id, record.channel_id, state.messageId);
       return "Reaction-role message published.";
     }
   });
@@ -5695,7 +5721,7 @@ function renderVerificationMenu(guild, state) {
   ];
 
   if (state.page === "bot") {
-    rows.push(buildChannelSelectRow(menuId("verification","bot-channel"), {placeholder:"Bot detection channel"}));
+    rows.push(buildChannelSelectRow(menuId("verification","bot-channel"), {placeholder:"Bot detection channel (announcement channels)", channelTypes:[discord.ChannelType.GuildAnnouncement]}));
     rows.push(buildButtonRow([
       {customId:menuId("verification","bot-create"), label:"Create bot-detection channel", style:"secondary"},
       {customId:menuId("verification","notice"), label:"Post bot notice", style:"secondary"},
@@ -5756,15 +5782,21 @@ function renderTicketMenu(guild, state) {
   const questions = panel && state.typeId ? tickets.listTicketFormQuestions(guild.id, panel.panel_id, state.typeId) : [];
   const routes = panel && state.typeId ? tickets.listTicketFormRoutes(guild.id, panel.panel_id, state.typeId) : [];
 
-  const embed = new discord.EmbedBuilder().setTitle("BargazBot Tickets")
+  const embed = new discord.EmbedBuilder().setTitle("BargazBot Tickets").setColor(0x5865F2).setTimestamp()
     .setDescription((state.status ? `${state.status}\n\n` : "") +
       `Panels: ${panels.length} • Selected panel: **${panel?.title ?? "None"}**\n` +
       `Types: ${types.length}${types.length ? "" : " — add a ticket type before users can open tickets."}\n` +
       (panel ? `Panel channel: <#${panel.channel_id}>\n` : "") +
       (state.typeId ? `Selected type form questions: ${questions.length} • Routes: ${routes.length}\n` : "") +
-      (types.length ? `\n${types.map(type => `• ${type.name} (\`${type.container_type}\`)`).join("\n")}` : ""))
-    .setColor(0x5865F2)
-    .setTimestamp();
+      (types.length ? `\n${types.map(type => `• ${type.name} (\`${type.container_type}\`)`).join("\n")}` : ""));
+
+  if (state.page === "create") {
+    embed.setDescription((state.status ? `${state.status}\n\n` : "") + "Choose the channel where the ticket panel should be posted.");
+    return {embeds:[embed], components:[
+      buildChannelSelectRow(menuId("ticket","create-channel"), {placeholder:"Choose a channel for the ticket panel"}),
+      buildButtonRow([{customId:menuId("ticket","back"), label:"Back", style:"secondary"}])
+    ]};
+  }
 
   const rows = [buildButtonRow([
     {customId:menuId("ticket","create"), label:"Create panel", style:"success"},
@@ -5799,11 +5831,8 @@ async function handleTicketMenu(interaction) {
     const action = parseMenuId(component.customId)[1];
     const guild = interaction.guild;
 
-    if (action === "create") {
-      state.page = "create";
-      state.status = "Choose the channel where the ticket panel should be posted.";
-      return;
-    }
+    if (action === "create") {state.page = "create"; state.status = "Choose the channel where the ticket panel should be posted."; return;}
+    if (action === "back") {state.page = "main"; state.status = null; return;}
     if (action === "create-channel") {
       const channelId = component.values?.[0];
       const customId = menuId("ticket","create-modal", interaction.id);
@@ -5928,7 +5957,7 @@ function renderNavigationMenu(guild, state) {
       `Auto update: **${record?.auto_update ? "on" : "off"}**`)
     .setTimestamp();
   const rows = [
-    buildChannelSelectRow(menuId("navigation","create"), {placeholder:"Post a new navigation message in..."}),
+    buildChannelSelectRow(menuId("navigation","create"), {placeholder:"Post a new navigation message in...", channelTypes:[discord.ChannelType.GuildAnnouncement]}),
   ];
   if (messages.length) {
     rows.push(buildSelectRow(menuId("navigation","select"), messages.slice(0,25).map(item =>
@@ -5939,7 +5968,7 @@ function renderNavigationMenu(guild, state) {
     ), {placeholder:"Delete a navigation message"}));
   }
   if (record) {
-    rows.push(buildChannelSelectRow(menuId("navigation","channels"), {placeholder:"Choose channels to include", minValues:0, maxValues:25}));
+    rows.push(buildChannelSelectRow(menuId("navigation","channels"), {placeholder:"Choose announcement channels to include", minValues:0, maxValues:25, channelTypes:[discord.ChannelType.GuildAnnouncement]}));
     rows.push(buildButtonRow([
       {customId:menuId("navigation","title"), label:"Edit title/description", style:"primary"},
       {customId:menuId("navigation","refresh"), label:"Refresh", style:"secondary"}
@@ -5992,49 +6021,79 @@ async function handleNavigationMenu(interaction) {
 
 function renderAutoModMenu(guild, state) {
   const rules = autoMod.listRules(guild.id);
-  const embed = new discord.EmbedBuilder().setTitle("BargazBot Auto-mod")
+  const selected = state.ruleId ? rules.find(r => r.rule_id === state.ruleId) : null;
+  state.ruleId = selected?.rule_id ?? null;
+  const actions = selected ? (typeof selected.actions_json === "string" ? JSON.parse(selected.actions_json || "{}") : selected.actions_json ?? {}) : {};
+  const scope = selected ? (autoMod.getRuleScope(guild.id, selected.rule_id) ?? selected.scope ?? {}) : {};
+  const scopeRoles = scope.roleIds ?? scope.roles ?? [];
+  const scopeChannels = scope.channelIds ?? scope.channels ?? [];
+  const embed = new discord.EmbedBuilder().setTitle("BargazBot Auto-mod").setColor(0x5865F2).setTimestamp()
     .setDescription((state.status ? `${state.status}\n\n` : "") +
-      `Rules: ${rules.length}\n` +
-      rules.map(rule => `• ${rule.rule_id} — **${rule.type}** (${rule.enabled === 1 ? "on" : "off"})`).join("\n"))
-    .setTimestamp();
+      `Rules: ${rules.length}\n` + rules.map(rule => `• **${rule.type}** (${rule.enabled === 1 ? "on" : "off"}) \`${rule.rule_id}\``).join("\n") +
+      (selected ? `\n\n**Selected:** ${selected.type} \`${selected.rule_id}\`\nPunishments: warn=${Boolean(actions.warn)} delete=${Boolean(actions.delete)} timeout=${actions.timeoutMs ? `${Math.round(actions.timeoutMs/60000)}m` : "off"} kick=${Boolean(actions.kick)} ban=${Boolean(actions.ban)}\nScope: ignored roles=${scopeRoles.length} channels=${scopeChannels.length}` : ""));
   const rows = [buildSelectRow(menuId("auto-mod","add"), [
     menuOption("Repetition","repetition"), menuOption("Emoji spam","emoji"), menuOption("Caps","caps"),
     menuOption("Symbols","symbols"), menuOption("Links","links"), menuOption("Slowmode","slowmode")
   ], {placeholder:"Add a rule"})];
   if (rules.length) {
-    rows.push(buildSelectRow(menuId("auto-mod","toggle"), rules.map(rule =>
-      menuOption(`${rule.type} (${rule.enabled === 1 ? "on" : "off"})`, rule.rule_id)), {placeholder:"Toggle a rule"}));
-    rows.push(buildSelectRow(menuId("auto-mod","delete"), rules.map(rule =>
-      menuOption(rule.type, rule.rule_id)), {placeholder:"Delete a rule"}));
+    rows.push(buildSelectRow(menuId("auto-mod","select"), rules.slice(0,25).map(rule => menuOption(`${rule.type} (${rule.enabled === 1 ? "on" : "off"})`, rule.rule_id)), {placeholder:"Select a rule to edit"}));
   }
-  rows.push(buildButtonRow([
-    {customId:menuId("auto-mod","warnings"), label:"Check warnings", style:"primary"},
-    {customId:menuId("auto-mod","clear"), label:"Clear warnings", style:"secondary"}
-  ]));
-  return {embeds:[embed], components:rows};
+  if (selected) {
+    rows.push(buildSelectRow(menuId("auto-mod","action"), [
+      menuOption("Toggle enabled","toggle"), menuOption("Toggle warn","warn"), menuOption("Toggle delete message","delete-msg"),
+      menuOption("Timeout 5 min","timeout-5"), menuOption("Timeout off","timeout-off"), menuOption("Toggle kick","kick"), menuOption("Toggle ban","ban")
+    ], {placeholder:"Rule action/punishment"}));
+    rows.push(buildButtonRow([
+      {customId:menuId("auto-mod","scope"), label:"Set exclusions/scope", style:"secondary"},
+      {customId:menuId("auto-mod","warnings"), label:"Check warnings", style:"primary"},
+      {customId:menuId("auto-mod","clear"), label:"Clear warnings", style:"secondary"},
+      {customId:menuId("auto-mod","delete"), label:"Delete rule", style:"danger"}
+    ]));
+  } else {
+    rows.push(buildButtonRow([{customId:menuId("auto-mod","warnings"), label:"Check warnings", style:"primary"}, {customId:menuId("auto-mod","clear"), label:"Clear warnings", style:"secondary"}]));
+  }
+  return {embeds:[embed], components:rows.slice(0,5)};
 }
 
 async function handleAutoModMenu(interaction) {
   await featureMenu(interaction, "auto-mod", renderAutoModMenu, async (component, state, source) => {
     const action = parseMenuId(component.customId)[1];
     const guild = interaction.guild;
-    if (action === "add") {
-      const rule = autoMod.createRule(guild.id, {type:component.values[0]});
-      await logFeatureTrail(source, "Auto-mod rule created", [{name:"Rule", value:rule.rule_id, inline:true}]);
-      return `Added ${rule.type} rule.`;
+    if (action === "add") {const rule = autoMod.createRule(guild.id, {type:component.values[0]}); state.ruleId = rule.rule_id; await logFeatureTrail(source, "Auto-mod rule created", [{name:"Rule", value:rule.rule_id, inline:true}]); return `Added ${rule.type} rule (default timeout 5 min).`;}
+    if (action === "select") {state.ruleId = component.values[0]; return "Rule selected.";}
+    if (action === "delete") {if (!state.ruleId) {return "Choose a rule first.";} autoMod.deleteRule(guild.id, state.ruleId, guild); state.ruleId = null; return "Rule deleted.";}
+    if (action === "action") {
+      if (!state.ruleId) {return "Choose a rule first.";}
+      const rule = autoMod.getRule(guild.id, state.ruleId);
+      const actions = typeof rule.actions_json === "string" ? JSON.parse(rule.actions_json || "{}") : rule.actions_json ?? {};
+      const choice = component.values[0];
+      if (choice === "toggle") {autoMod.updateRule(guild.id, rule.rule_id, {enabled:rule.enabled !== 1}); return `Rule is now ${rule.enabled === 1 ? "off" : "on"}.`;}
+      if (choice === "warn") {actions.warn = !actions.warn;}
+      if (choice === "delete-msg") {actions.delete = !actions.delete;}
+      if (choice === "timeout-5") {actions.timeoutMs = 300000;}
+      if (choice === "timeout-off") {actions.timeoutMs = 0;}
+      if (choice === "kick") {actions.kick = !actions.kick;}
+      if (choice === "ban") {actions.ban = !actions.ban;}
+      autoMod.updateRule(guild.id, rule.rule_id, {actions});
+      return "Rule punishment updated.";
     }
-    if (action === "toggle") {
-      const rule = autoMod.getRule(guild.id, component.values[0]);
-      autoMod.updateRule(guild.id, rule.rule_id, {enabled:rule.enabled !== 1});
-      return `Rule is now ${rule.enabled === 1 ? "off" : "on"}.`;
+    if (action === "scope") {
+      if (!state.ruleId) {return "Choose a rule first.";}
+      const customId = menuId("auto-mod","scope-modal", interaction.id);
+      const scope = autoMod.getRuleScope(guild.id, state.ruleId) ?? {};
+      const submitted = await showConfigModal(component, new discord.ModalBuilder().setCustomId(customId).setTitle("Auto-mod scope")
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("roles").setLabel("Ignored role IDs (comma/space separated)").setStyle(discord.TextInputStyle.Paragraph).setRequired(false).setMaxLength(400).setValue((scope.roleIds ?? []).join(", "))))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("channels").setLabel("Only these channel IDs (blank = all)").setStyle(discord.TextInputStyle.Paragraph).setRequired(false).setMaxLength(400).setValue((scope.channelIds ?? []).join(", "))))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("users").setLabel("Ignored user IDs (comma/space separated)").setStyle(discord.TextInputStyle.Paragraph).setRequired(false).setMaxLength(400).setValue((scope.userIds ?? []).join(", ")))), customId);
+      if (!submitted) {return;}
+      const parseIds = v => v.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+      autoMod.setRuleScope(guild.id, state.ruleId, {roleIds:parseIds(submitted.fields.getTextInputValue("roles")), channelIds:parseIds(submitted.fields.getTextInputValue("channels")), userIds:parseIds(submitted.fields.getTextInputValue("users"))});
+      return "Rule scope updated.";
     }
-    if (action === "delete") {autoMod.deleteRule(guild.id, component.values[0]); return "Rule deleted.";}
     if (action === "warnings" || action === "clear") {
       const customId = menuId("auto-mod","warnings-modal", interaction.id);
-      const submitted = await showConfigModal(component, new discord.ModalBuilder()
-        .setCustomId(customId).setTitle("Auto-mod warnings")
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("user").setLabel("User ID").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(30))), customId);
+      const submitted = await showConfigModal(component, new discord.ModalBuilder().setCustomId(customId).setTitle("Auto-mod warnings")
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("user").setLabel("User ID").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(30))), customId);
       if (!submitted) {return;}
       const userId = submitted.fields.getTextInputValue("user").trim();
       if (action === "clear") {autoMod.clearWarnings(guild.id, userId); return `Warnings cleared for <@${userId}>.`;}
@@ -6047,73 +6106,87 @@ function renderRoleRewardMenu(guild, state) {
   const config = featureSettings.getRoleRewardConfig(guild.id);
   const rewards = roleRewards.listRewards(guild.id);
   state.rewardId = rewards.some(row => row.reward_id === state.rewardId) ? state.rewardId : rewards[0]?.reward_id ?? null;
-  const embed = new discord.EmbedBuilder().setTitle("BargazBot Role Rewards")
+  const selected = rewards.find(r => r.reward_id === state.rewardId) ?? null;
+  const conds = selected ? (selected.conditions ?? []) : [];
+  const condSummary = conds.map((g,i)=>`Group ${i+1} (${g.op ?? "AND"}): ${(g.children ?? []).map(c=>c.kind ?? c.type).join(", ") || "empty"}`).join(" | ");
+  const embed = new discord.EmbedBuilder().setTitle("BargazBot Role Rewards").setColor(0x5865F2).setTimestamp()
     .setDescription((state.status ? `${state.status}\n\n` : "") +
       `Recheck: **${config.recheckEnabled ? "on" : "off"}** • Manual only: **${config.manualOnly ? "on" : "off"}**\n` +
-      `Rewards: ${rewards.length}\n` +
-      rewards.map(row => `• ${row.reward_id} — **${row.trigger_type}** → <@&${row.role_id}>`).join("\n"))
-    .setTimestamp();
+      `Rewards: ${rewards.length}\n` + rewards.map(row => `• ${row.name ?? row.reward_id} — **${row.trigger_type}** → <@&${row.role_id}>`).join("\n") +
+      (selected ? `\n\n**Selected:** ${selected.name ?? selected.reward_id}\nRole: <@&${selected.role_id}>\nConditions: ${condSummary || "none"}` : ""));
   const rows = [
     buildButtonRow([
       {customId:menuId("role-reward","create"), label:"Add reward", style:"success"},
-      {customId:menuId("role-reward","delete"), label:"Delete reward", style:"danger", disabled:!state.rewardId},
-      {customId:menuId("role-reward","recheck"), label:"Recheck now", style:"primary"}
+      {customId:menuId("role-reward","add-cond"), label:"Add condition", style:"primary", disabled:!selected},
+      {customId:menuId("role-reward","delete"), label:"Delete reward", style:"danger", disabled:!selected},
+      {customId:menuId("role-reward","recheck"), label:"Recheck now", style:"secondary"}
     ]),
-    buildMentionableRow(menuId("role-reward","grant"), {placeholder:"Grant reward manually", disabled:!state.rewardId}),
-    buildSelectRow(menuId("role-reward","config"), [
-      menuOption("Toggle recheck", "recheck"), menuOption("Toggle manual only", "manual"), menuOption("Toggle auto-remove", "auto-remove")
-    ], {placeholder:"Reward options"})
+    buildMentionableRow(menuId("role-reward","role"), {placeholder:"Select reward role (for new reward)", maxValues:1, minValues:0})
   ];
-  return {embeds:[embed], components:rows};
+  if (rewards.length) {rows.push(buildSelectRow(menuId("role-reward","select"), rewards.slice(0,25).map(row => menuOption(row.name ?? row.reward_id, row.reward_id, row.trigger_type)), {placeholder:"Select a reward"}));}
+  rows.push(buildSelectRow(menuId("role-reward","config"), [menuOption("Toggle recheck","recheck"), menuOption("Toggle manual only","manual"), menuOption("Toggle auto-remove","auto-remove")], {placeholder:"Reward options"}));
+  rows.push(buildMentionableRow(menuId("role-reward","grant"), {placeholder:"Grant selected reward manually", disabled:!selected}));
+  return {embeds:[embed], components:rows.slice(0,5)};
 }
 
 async function handleRoleRewardMenu(interaction) {
   await featureMenu(interaction, "role-reward", renderRoleRewardMenu, async (component, state, source) => {
     const action = parseMenuId(component.customId)[1];
     const guild = interaction.guild;
+    if (action === "role") {state.pendingRoleId = component.values?.[0] ?? null; return state.pendingRoleId ? `Role <@&${state.pendingRoleId}> selected for the next reward.` : "Reward role selection cleared.";}
+    if (action === "select") {state.rewardId = component.values[0]; return "Reward selected.";}
     if (action === "create") {
+      if (!state.pendingRoleId) {return "Select a role first using the role picker.";}
       const customId = menuId("role-reward","create-modal", interaction.id);
-      const submitted = await showConfigModal(component, new discord.ModalBuilder()
-        .setCustomId(customId).setTitle("Add role reward")
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("trigger").setLabel("Trigger type").setStyle(discord.TextInputStyle.Short)
-          .setValue("live").setRequired(true).setMaxLength(40)))
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("role").setLabel("Role ID").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(30)))
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("threshold").setLabel("Threshold (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(20)))
-        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder()
-          .setCustomId("platform").setLabel("Platform (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(20))), customId);
+      const submitted = await showConfigModal(component, new discord.ModalBuilder().setCustomId(customId).setTitle("Add role reward")
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("name").setLabel("Reward name").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(80)))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("trigger").setLabel("First condition kind").setStyle(discord.TextInputStyle.Short).setValue("live").setRequired(true).setMaxLength(40).setPlaceholder("live, follow, subscribe, discord-role, manual...")))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("platform").setLabel("Platform (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(20).setPlaceholder("youtube/twitch/kick")))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("threshold").setLabel("Threshold (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(20)))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("groupop").setLabel("Group operator AND/OR").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(3).setValue("AND"))), customId);
       if (!submitted) {return;}
-      const reward = roleRewards.createReward(guild.id, {
-        triggerType:submitted.fields.getTextInputValue("trigger").trim().toLowerCase(),
-        roleId:submitted.fields.getTextInputValue("role").trim(),
-        threshold:submitted.fields.getTextInputValue("threshold").trim() || null,
-        platform:submitted.fields.getTextInputValue("platform").trim().toLowerCase() || null
-      });
+      const kind = submitted.fields.getTextInputValue("trigger").trim().toLowerCase();
+      const groupOp = submitted.fields.getTextInputValue("groupop").trim().toUpperCase() === "OR" ? "OR" : "AND";
+      const condition = {type:"condition", kind, platform:submitted.fields.getTextInputValue("platform").trim().toLowerCase() || null, threshold:submitted.fields.getTextInputValue("threshold").trim() || null};
+      const reward = roleRewards.createReward(guild.id, {name:submitted.fields.getTextInputValue("name").trim() || null, roleId:state.pendingRoleId, triggerType:kind, conditions:[{op:groupOp, children:[condition]}]});
       state.rewardId = reward.reward_id;
       await logFeatureTrail(source, "Role reward created", [{name:"Reward", value:reward.reward_id, inline:true}]);
-      return "Role reward added.";
+      return "Role reward added. Use Add condition to build AND/OR groups.";
+    }
+    if (action === "add-cond") {
+      if (!state.rewardId) {return "Choose a reward first.";}
+      const reward = roleRewards.getReward(guild.id, state.rewardId);
+      const customId = menuId("role-reward","cond-modal", interaction.id);
+      const submitted = await showConfigModal(component, new discord.ModalBuilder().setCustomId(customId).setTitle("Add reward condition")
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("groupop").setLabel("Group operator AND/OR").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(3).setValue("AND")))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("kind").setLabel("Condition kind").setStyle(discord.TextInputStyle.Short).setRequired(true).setMaxLength(40).setPlaceholder("live/follow/subscribe/discord-role/manual")))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("platform").setLabel("Platform/account/role ID (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(60)))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("threshold").setLabel("Threshold (optional)").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(20)))
+        .addComponents(new discord.ActionRowBuilder().addComponents(new discord.TextInputBuilder().setCustomId("newgroup").setLabel("New group? yes/no").setStyle(discord.TextInputStyle.Short).setRequired(false).setMaxLength(3).setValue("no"))), customId);
+      if (!submitted) {return;}
+      const groups = roleRewards.normalizeConditions(reward.conditions_json, reward);
+      const op = submitted.fields.getTextInputValue("groupop").trim().toUpperCase() === "OR" ? "OR" : "AND";
+      const kind = submitted.fields.getTextInputValue("kind").trim().toLowerCase();
+      const platformOrId = submitted.fields.getTextInputValue("platform").trim() || null;
+      const condition = {type:"condition", kind, platform:["youtube","twitch","kick"].includes(platformOrId) ? platformOrId : null, roleId:kind === "discord-role" ? platformOrId : null, providerAccountId:platformOrId && !["youtube","twitch","kick"].includes(platformOrId) && kind !== "discord-role" ? platformOrId : null, threshold:submitted.fields.getTextInputValue("threshold").trim() || null};
+      const newGroup = submitted.fields.getTextInputValue("newgroup").trim().toLowerCase() === "yes";
+      if (newGroup || !groups.length) {groups.push({op, children:[condition]});}
+      else {groups[groups.length - 1].children.push(condition); groups[groups.length - 1].op = op;}
+      roleRewards.updateReward(guild.id, state.rewardId, {conditions:groups});
+      return "Condition added. You can add more conditions/groups; this builder supports unlimited conditions by adding them one at a time.";
     }
     if (action === "delete") {roleRewards.deleteReward(guild.id, state.rewardId); state.rewardId = null; return "Reward deleted.";}
-    if (action === "recheck") {
-      const applied = await roleRewards.recheckRewards(interaction.client, guild.id);
-      return `Recheck complete: ${applied} reward(s) applied.`;
-    }
+    if (action === "recheck") {const applied = await roleRewards.recheckRewards(interaction.client, guild.id); return `Recheck complete: ${applied} reward(s) applied.`;}
     if (action === "grant") {
       const reward = roleRewards.getReward(guild.id, state.rewardId);
       let granted = 0;
-      for (const id of component.values ?? []) {
-        if (await roleRewards.grantReward(interaction.client, guild.id, reward, id, {manual:true})) {granted++;}
-      }
+      for (const id of component.values ?? []) {if (await roleRewards.grantReward(interaction.client, guild.id, reward, id, {manual:true})) {granted++;}}
       return `Granted ${granted} reward(s).`;
     }
     if (action === "config") {
       const config = featureSettings.getRoleRewardConfig(guild.id);
       const choice = component.values[0];
-      const patch = choice === "recheck" ? {recheckEnabled:!config.recheckEnabled}
-        : choice === "manual" ? {manualOnly:!config.manualOnly}
-        : {autoRemoveOnly:!config.autoRemoveOnly};
+      const patch = choice === "recheck" ? {recheckEnabled:!config.recheckEnabled} : choice === "manual" ? {manualOnly:!config.manualOnly} : {autoRemoveOnly:!config.autoRemoveOnly};
       featureSettings.updateRoleRewardConfig(guild.id, patch, interaction.user.id);
       return "Reward options updated.";
     }
@@ -6165,18 +6238,20 @@ async function handleLinkMenu(interaction) {
         const linkState = accountLinking.createOAuthState(interaction.guild.id, interaction.user.id, platform);
         const url = accountLinking.buildAuthorizationUrl(platform, linkState);
         await component.reply({content:`[Link your ${platform} account](${url})`, flags:discord.MessageFlags.Ephemeral});
+        return;
       } else if (action === "unlink") {
         accountLinking.unlinkAccount(interaction.guild.id, interaction.user.id, component.values[0]);
         state.status = `Unlinked ${component.values[0]}.`;
       } else if (action === "refresh") {
         state.status = "Account list refreshed.";
       }
-      await component.update(body());
+      if (component.replied || component.deferred) {await interaction.editReply(body()).catch(() => {});}
+      else {await component.update(body()).catch(async () => {await interaction.editReply(body()).catch(() => {});});}
     } catch (error) {
       log.error("link menu error:", error);
       state.status = `Error: ${error.message}`;
-      await component.update(body()).catch(() => {});
-      collector.stop("error");
+      if (component.replied || component.deferred) {await interaction.editReply(body()).catch(() => {});}
+      else {await component.update(body()).catch(async () => {await interaction.editReply(body()).catch(() => {});});}
     }
   });
   collector.on("end", async () => {await interaction.editReply({components:[]}).catch(() => {});});

@@ -887,6 +887,36 @@ export function initDB() {
     console.log("Added BargazBot server data deletion flag.");
   }
 
+  addColumnIfMissing("role_reward_rules", "conditions_json", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing("role_reward_rules", "name", "TEXT");
+  addColumnIfMissing("reaction_role_messages", "nickname", "TEXT");
+  addColumnIfMissing("reaction_role_options", "group_label", "TEXT");
+  addColumnIfMissing("reaction_role_options", "menu_kind", "TEXT");
+  addColumnIfMissing("reaction_role_options", "button_label", "TEXT");
+  addColumnIfMissing("reaction_role_options", "position", "INTEGER NOT NULL DEFAULT 0");
+
+  const legacyRewards = db.prepare(`
+    SELECT guild_id, reward_id, trigger_type, platform, provider_account_id, metric, threshold, conditions_json
+    FROM role_reward_rules
+  `).all();
+  const updateLegacyReward = db.prepare(`
+    UPDATE role_reward_rules SET conditions_json = ? WHERE guild_id = ? AND reward_id = ?
+  `);
+  for (const row of legacyRewards) {
+    let conditions = [];
+    try { conditions = JSON.parse(row.conditions_json ?? "[]"); } catch { conditions = []; }
+    if (Array.isArray(conditions) && conditions.length > 0) {continue;}
+    const legacy = {
+      type: "condition",
+      kind: row.trigger_type ?? "manual",
+      platform: row.platform ?? null,
+      providerAccountId: row.provider_account_id ?? null,
+      metric: row.metric ?? null,
+      threshold: row.threshold ?? null
+    };
+    updateLegacyReward.run(JSON.stringify([{op:"AND", children:[legacy]}]), row.guild_id, row.reward_id);
+  }
+
   console.log("SQLite initialized at:", DB_PATH);
   return db;
 }

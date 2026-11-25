@@ -19,6 +19,30 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.12.0-beta.4 - Nov 25
+- Renamed /invite to /update
+- Refreshed the update menu UI
+- Replaced the older menus for /feature-config and /logging with multi-page Yes/No toggles
+  - Fixed logging Prev/Next handling so page navigation doesn't require logging-set permission
+- Fixed Counter Feature 
+  - Fixed InteractionAlreadyReplied menu errors
+  - Added a delete button
+- Added a create-panel picker flow for the ticket panel creation UI
+- Edited /set-timezone to use a custom modal flow and removed the additional command field
+- Added birthday trigger validation and fixed birthday create/edit handling
+- Added a default 5-minute timeout behavior for automod features
+- Added punishment/scope editing, rule deletion logging, and fixed getRuleScope for automod
+- Role Rewards and Reaction Roles now have backend foundations for conditions, groups, nicknames, and content
+- Role selection flows and menus edited for Role Rewards and Reaction Roles
+- Accidental limitation for channel pickers to only use announcement channels
+- Autopublish, Verification, and Navigation use the new channel pickers
+- Fixed InteractionAlreadyreplied handling in link menu
+Note: YouTube linking is not publically available and needs to return a Discord error termporarily by default unless in the owner server. (waiting for review)
+
+## Correction to v26.12.0-beta.3
+- The /ticket update did NOT include ghost panel cleanup handling
+- The /ticket update should have said "permission-based feature grouping" rather than "identical-permission overlap handling"
+
 ## v26.12.0-beta.3 - Nov 25
 - Added accountLinking.js with OAuth account linking flows, provider configuration checks, redirect/state handling, and token exchange support for linked platform accounts.
 - Added auditMonitor.js to poll guild audit logs and report relevant audit events through the logging system.

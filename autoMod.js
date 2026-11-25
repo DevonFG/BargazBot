@@ -28,9 +28,10 @@ export function getRule(guildId, ruleId) {
 }
 
 export function listRules(guildId) {
-  return getDB().prepare("SELECT rule_id FROM automod_rules WHERE guild_id = ? ORDER BY created_at ASC")
-    .all(guildId).map(row => getRule(guildId, row.rule_id));
+  return getDB().prepare("SELECT * FROM automod_rules WHERE guild_id = ? ORDER BY created_at ASC").all(guildId).map(row => getRule(guildId, row.rule_id));
 }
+
+export function getRuleScope(guildId, ruleId) {return getScope(guildId, ruleId);}
 
 export function setRuleScope(guildId, ruleId, scope = {}) {
   const db = getDB();
@@ -46,11 +47,12 @@ export function createRule(guildId, patch = {}) {
   ensureGuild(guildId);
   if (!RULE_TYPES.has(patch.type)) {throw new Error(`Unknown auto-mod rule type: ${patch.type}`);}
   const ruleId = patch.ruleId ?? newId();
+  const actions = patch.actions ?? {warn:true, delete:false, timeoutMs:300000, kick:false, ban:false};
   getDB().prepare(`
     INSERT INTO automod_rules (guild_id, rule_id, type, enabled, settings_json, actions_json)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(guildId, ruleId, patch.type, patch.enabled === false ? 0 : 1,
-    JSON.stringify(patch.settings ?? {}), JSON.stringify(patch.actions ?? {}));
+    JSON.stringify(patch.settings ?? {}), JSON.stringify(actions));
   if (patch.scope) {setRuleScope(guildId, ruleId, patch.scope);}
   return getRule(guildId, ruleId);
 }
@@ -73,10 +75,22 @@ export function updateRule(guildId, ruleId, patch = {}) {
   return getRule(guildId, ruleId);
 }
 
-export function deleteRule(guildId, ruleId) {
+export function deleteRule(guildId, ruleId, guild = null) {
   const db = getDB();
+  const rule = getRule(guildId, ruleId);
   db.prepare("DELETE FROM automod_scope WHERE guild_id = ? AND rule_id = ?").run(guildId, ruleId);
-  return db.prepare("DELETE FROM automod_rules WHERE guild_id = ? AND rule_id = ?").run(guildId, ruleId).changes > 0;
+  const deleted = db.prepare("DELETE FROM automod_rules WHERE guild_id = ? AND rule_id = ?").run(guildId, ruleId).changes > 0;
+  if (deleted && guild) {
+    guildLogger.logCategoryEvent(guild, "auto-mod", {
+      title:"Auto-mod rule deleted",
+      description:"An auto-mod rule was deleted.",
+      fields:[
+        {name:"Rule", value:String(ruleId), inline:true},
+        {name:"Type", value:String(rule?.type ?? "unknown"), inline:true}
+      ]
+    }).catch(() => {});
+  }
+  return deleted;
 }
 
 function isIgnored(message, rule, config) {
