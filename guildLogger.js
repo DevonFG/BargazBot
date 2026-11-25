@@ -42,8 +42,18 @@ const COMMAND_LOG_TTL_MS = 30 * 60 * 1000;
 const commandSessions = new Map();
 const repairingChannels = new Set();
 
+const CATEGORY_ALIASES = {
+  configuration: "features-config",
+  subscriptions: "notifications",
+  automatic: "autopublish",
+  errors: "commands"
+};
+
+function normalizeCategory(category) {return CATEGORY_ALIASES[category] ?? category;}
+
 function getCategoryDefinition(category) {
-  const definition = LOG_CATEGORIES[category];
+  const key = normalizeCategory(category);
+  const definition = LOG_CATEGORIES[key];
   if (!definition) {throw new Error(`Unknown BargazBot log category: ${category}`);}
   return definition;
 }
@@ -60,12 +70,13 @@ export function isCategoryForced(guildId, category) {
 }
 
 export function isCategoryEnabled(guildId, category) {
-  getCategoryDefinition(category);
-  if (isCategoryForced(guildId, category)) {return true;}
+  const key = normalizeCategory(category);
+  getCategoryDefinition(key);
+  if (isCategoryForced(guildId, key)) {return true;}
   const row = getDB().prepare(
     "SELECT enabled FROM guild_log_settings WHERE guild_id = ? AND category = ?"
-  ).get(guildId, category);
-  return row ? row.enabled === 1 : LOG_CATEGORIES[category].defaultEnabled;
+  ).get(guildId, key);
+  return row ? row.enabled === 1 : LOG_CATEGORIES[key].defaultEnabled;
 }
 
 export function getLogSettings(guildId) {
@@ -137,6 +148,14 @@ export function resetLogSettings(guildId, actorId = null) {
     title: "Logging settings reset",
     description: `Logging categories were restored to defaults${actorId ? ` by <@${actorId}>` : ""}.`
   }).catch(() => {});
+}
+
+export function resetCategory(guildId, category) {
+  const key = normalizeCategory(category);
+  getCategoryDefinition(key);
+  getDB().prepare(
+    "DELETE FROM guild_log_settings WHERE guild_id = ? AND category = ?"
+  ).run(guildId, key);
 }
 
 /*
@@ -465,6 +484,139 @@ export async function logExternalCommand(message) {
       {name: "User",     value: interaction.user ? `<@${interaction.user.id}>` : "Unknown", inline: true}
     ]
   });
+}
+
+/*
+=====================================================
+Legacy logger compatibility + feature log helpers
+=====================================================
+*/
+
+export async function logGuildEvent(guild, payload = {}) {
+  return logEvent(guild, {...payload, category: normalizeCategory(payload.category ?? "commands")});
+}
+
+export async function logCategoryEvent(guild, category, payload = {}) {
+  return logEvent(guild, {...payload, category});
+}
+
+export async function logCommand(interaction, {successful = true, details = null} = {}) {
+  if (!interaction?.guild) {return false;}
+  const result = successful ? "Completed" : `Failed${details ? `: ${details}` : ""}`;
+  if (await finishCommandLog(interaction, result)) {return true;}
+
+  const subcommand = interaction.options?.getSubcommand?.(false);
+  const command = subcommand
+    ? `/${interaction.commandName} ${subcommand}`
+    : `/${interaction.commandName}`;
+  const fields = [
+    {name:"Command", value:command, inline:true},
+    {name:"Result",  value:successful ? "Completed" : "Failed", inline:true}
+  ];
+  if (interaction.channelId) {fields.push({name:"Channel", value:`<#${interaction.channelId}>`, inline:true});}
+  if (details) {fields.push({name:"Details", value:String(details).slice(0, 1024), inline:false});}
+  return logEvent(interaction.guild, {
+    category:"commands",
+    title:"BargazBot command",
+    description:`${interaction.user} used a BargazBot command.`,
+    user:interaction.user,
+    fields
+  });
+}
+
+export async function logConfigurationChange(guild, payload = {}) {
+  return logGuildEvent(guild, {...payload, category:"configuration"});
+}
+
+export async function logPermissionChange(guild, payload = {}) {
+  return logGuildEvent(guild, {...payload, category:"permissions"});
+}
+
+export async function logSubscriptionChange(guild, payload = {}) {
+  return logGuildEvent(guild, {...payload, category:"subscriptions"});
+}
+
+export async function logModerationAction(guild, payload = {}) {
+  return logGuildEvent(guild, {...payload, category:"moderation"});
+}
+
+export async function logAutomaticAction(guild, payload = {}) {
+  return logGuildEvent(guild, {...payload, category:"automatic"});
+}
+
+export async function logGuildError(guild, payload = {}) {
+  return logGuildEvent(guild, {...payload, category:"errors"});
+}
+
+function permissionNames(flags) {
+  let value;
+  try {value = BigInt(flags?.bitfield ?? flags ?? 0);} catch {return [];}
+  return Object.entries(discord.PermissionFlagsBits ?? {})
+    .filter(([, bit]) => (value & BigInt(bit)) === BigInt(bit))
+    .map(([name]) => name);
+}
+
+export async function logRolePermissionChange(guild, payload = {}) {
+  const roleId = payload.roleId ?? payload.role?.id ?? null;
+  const before = new Set(permissionNames(payload.previous));
+  const after = new Set(permissionNames(payload.current));
+  const added = [...after].filter(name => !before.has(name));
+  const removed = [...before].filter(name => !after.has(name));
+  return logEvent(guild, {
+    category:"features-config",
+    title:payload.title ?? "BargazBot role permissions changed",
+    description:payload.description ?? "BargazBot's role permissions were changed.",
+    user:payload.user ?? null,
+    fields:[
+      ...(roleId ? [{name:"Role", value:`<@&${roleId}> (\`${roleId}\`)`, inline:true}] : []),
+      {name:"Added",    value:truncate(added.join(", ") || "None", 1024),   inline:false},
+      {name:"Removed",  value:truncate(removed.join(", ") || "None", 1024), inline:false},
+      {name:"Previous", value:truncate([...before].join(", ") || "None", 1024), inline:false},
+      {name:"Current",  value:truncate([...after].join(", ") || "None", 1024), inline:false}
+    ]
+  });
+}
+
+export async function logTicketEvent(guild, payload = {}) {
+  return logEvent(guild, {
+    category:"tickets",
+    title:payload.title ?? "BargazBot ticket event",
+    description:payload.description ?? "A ticket event occurred.",
+    user:payload.user ?? null,
+    fields:[
+      ...(payload.ticketId ? [{name:"Ticket", value:String(payload.ticketId), inline:true}] : []),
+      ...(payload.channelId ? [{name:"Channel", value:`<#${payload.channelId}>`, inline:true}] : []),
+      ...(payload.panelId ? [{name:"Panel", value:String(payload.panelId), inline:true}] : []),
+      ...(payload.fields ?? [])
+    ]
+  });
+}
+
+export async function logFailureSafe(guildOrId, payload = {}) {
+  try {return await logFailure(guildOrId, payload);}
+  catch (error) {log.error("BargazBot safe failure log failed:", error); return false;}
+}
+
+// Drop-in replacement for the old shared logger factory.
+export function createLogger() {
+  return {
+    LOG_CATEGORIES,
+    isCategoryEnabled,
+    setCategoryEnabled,
+    resetCategory,
+    getLogSettings,
+    logGuildEvent,
+    logCategoryEvent,
+    logCommand,
+    logConfigurationChange,
+    logPermissionChange,
+    logSubscriptionChange,
+    logModerationAction,
+    logAutomaticAction,
+    logGuildError,
+    logFailure,
+    logFailureSafe
+  };
 }
 
 export function setClient(client) {globalThis.__bargazClient = client;}

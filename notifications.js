@@ -2,10 +2,13 @@ import * as discord         from "discord.js";
 
 import * as autopublish     from "./autopublish.js";
 import * as channelManager  from "./channelManager.js";
+import * as counters        from "./counters.js";
 import * as entitlements    from "./entitlements.js";
 import * as featureSettings from "./featureSettings.js";
+import * as guildLogger     from "./guildLogger.js";
 import * as kick            from "./kick.js";
 import * as log             from "./appLogger.js";
+import * as roleRewards     from "./roleRewards.js";
 import * as twitch          from "./twitch.js";
 import * as youtube         from "./youtube.js";
 
@@ -826,6 +829,33 @@ export function setSubscriptionChannel(guildId,nickname,platform,discordChannelI
 function getSubscribedGuilds(platform,channelId) {return getPlatformModule(platform).getSubscribedGuilds(channelId);}
 async function getGuild(client,guildId) {return (client.guilds.cache.get(guildId) ?? await client.guilds.fetch(guildId).catch(() => null));}
 
+async function logNotificationFailure(client, guildOrId, details) {
+  const guild = guildOrId && typeof guildOrId !== "string"
+    ? guildOrId
+    : guildOrId ? await getGuild(client, String(guildOrId)) : null;
+  if (!guild) {
+    log.error("BargazBot notification failure:", details.title, details.error ?? "");
+    return;
+  }
+  await guildLogger.logFailureSafe(guild, {category:"notifications", ...details}).catch(() => {});
+}
+
+async function applyLiveHooks(client, content, changes) {
+  if (!changes.wentLive && !changes.ended && !changes.reconnected) {return;}
+  const platform = content.platform;
+  const accountId = String(content.channelId ?? "");
+  const isLive = Boolean(changes.wentLive || changes.reconnected);
+  const viewers = Number(content.viewerCount ?? content.viewers ?? 0) || 0;
+  for (const guild of client.guilds.cache.values()) {
+    await roleRewards.applyLiveRewards(client, guild.id, {platform, accountId, isLive, viewers}).catch(error =>
+      log.warn("BargazBot live reward hook failed:", guild.id, platform, error)
+    );
+    await counters.refreshSocialCounters(guild.id).catch(error =>
+      log.warn("BargazBot social counter hook failed:", guild.id, platform, error)
+    );
+  }
+}
+
 async function getExistingDiscordMessage(guild,storedMessage) {
   if (!storedMessage) {return null;}
   const channel = guild.channels.cache.get(storedMessage.discord_channel_id) ?? await guild.channels.fetch(storedMessage.discord_channel_id).catch(() => null);
@@ -844,7 +874,15 @@ async function resolveNotificationChannel(guild,subscription) {
 async function tryAutopublish(message, guildId) {
   if (!message || message.channel?.type !== discord.ChannelType.GuildAnnouncement) {return;}
   try {await autopublish.publishMessage(message, guildId);}
-  catch (error) {log.error("BargazBot auto-publish failed:", guildId, message.id, error);}
+  catch (error) {
+    log.error("BargazBot auto-publish failed:", guildId, message.id, error);
+    await logNotificationFailure(message.client, message.guild ?? guildId, {
+      title:"Auto-publish failed",
+      description:`Could not publish message ${message.id}.`,
+      fields:[{name:"Message", value:message.id, inline:true}],
+      error
+    });
+  }
 }
 async function sendNewNotification(guild,content,eventType,subscription,resetTracking = false) {
   const notificationChannel = await resolveNotificationChannel(guild,subscription);
@@ -1263,7 +1301,15 @@ export async function broadcastDmContent(client, content) {
       log.info("BargazBot DM notification sent:", row.user_id, content.platform, message.id);
       results.push({userId:row.user_id, success:true, messageId:message.id});
     } catch (error) {
-      log.error("BargazBot DM notification failed:", row.user_id, error);
+      await logNotificationFailure(null, null, {
+        title:"Direct message notification failed",
+        description:`Could not send a ${content.platform} notification to <@${row.user_id}>.`,
+        fields:[
+          {name:"Platform", value:content.platform, inline:true},
+          {name:"User", value:row.user_id, inline:true}
+        ],
+        error
+      });
       results.push({userId:row.user_id, success:false});
     }
   }
@@ -1297,12 +1343,30 @@ export async function broadcastContent(client,content,changes = {}) {
           await handleGroupAnnouncement(client,subscription.guild_id,group,mapped,content,changes);
         } catch (error) {
           log.error("BargazBot group announcement failed:", group.groupId, subscription.guild_id, error);
+          await logNotificationFailure(client, subscription.guild_id, {
+            title:"Group announcement failed",
+            description:`Could not post ${content.platform} group ${group.groupId}.`,
+            fields:[
+              {name:"Group", value:group.groupId, inline:true},
+              {name:"Platform", value:content.platform, inline:true}
+            ],
+            error
+          });
         }
       }
 
       results.push({guildId:subscription.guild_id, success:Boolean(result), action:result?.action ?? null, messageId:result?.message?.id ?? null});
     } catch (error) {
       log.error("BargazBot notification failed:", content.platform, subscription.guild_id, error);
+      await logNotificationFailure(client, subscription.guild_id, {
+        title:"Notification send failed",
+        description:`Could not send a ${content.platform} notification.`,
+        fields:[
+          {name:"Platform", value:content.platform, inline:true},
+          {name:"Creator", value:String(content.channelId ?? "Unknown"), inline:true}
+        ],
+        error
+      });
       results.push({guildId:subscription.guild_id, success: false, action: null, messageId: null});
     }
   }
@@ -1315,6 +1379,7 @@ export async function processResult(client,result) {
   const {content,changes} = result;
   const shouldProcess = changes.isNew || changes.wentLive || changes.ended || changes.reconnected || changes.titleChanged || changes.thumbnailChanged || changes.scheduleChanged || changes.endedChanged;
   if (!shouldProcess) {return [];}
+  await applyLiveHooks(client, content, changes);
   return broadcastContent(client,content,changes);
 }
 export async function processYouTubeResults(client,results) {

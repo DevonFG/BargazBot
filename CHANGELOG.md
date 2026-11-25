@@ -19,6 +19,9 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.12.0-beta.2 - Nov 24
+- Changes listed under next commit.
+
 ## v26.12.0-beta.1 - Nov 22
 - Added guildLogger.js with twenty log categories, forced-on rules while logs is enabled, bulk On/Off controls for enabled and all categories, and a logging-config sanitizer.
 - Added command log sessions that edit one message as buttons, selects, and modals are used, plus public slash-response logging for other bots.

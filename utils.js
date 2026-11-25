@@ -107,6 +107,61 @@ export function buildButtonRow(buttons) {
   return new discord.ActionRowBuilder().addComponents(...components);
 }
 
+// Clips text to a maximum length without creating mentions
+export function clip(value, max = 100) {return String(value ?? "").slice(0, max);}
+
+// Returns one clamped page of items with the page count
+export function paged(items, page = 0, size = 25) {
+  const list = Array.isArray(items) ? items : [];
+  const pageCount = Math.max(1, Math.ceil(list.length / Math.max(1, size)));
+  const current = Math.max(0, Math.min(pageCount - 1, Number(page) || 0));
+  return {entries:list.slice(current * size, (current + 1) * size), page:current, pageCount};
+}
+
+// Builds a standard Prev/Next row with optional extra buttons
+export function buildPagingRow(prefix, page, pageCount, buttons = []) {
+  return buildButtonRow([
+    {customId:menuId(prefix,"prev"), label:"Prev", style:"secondary", disabled:page <= 0},
+    {customId:menuId(prefix,"next"), label:"Next", style:"secondary", disabled:page >= pageCount - 1},
+    ...(buttons ?? []).slice(0, 3)
+  ]);
+}
+
+// Splits long text into multiple fields that fit Discord's 1024-character limit
+export function splitFields(name, text, max = 1024) {
+  const value = String(text ?? "");
+  if (!value) {return [{name, value:"None"}];}
+  const parts = chunk([...value], max).map(part => part.join(""));
+  return parts.length === 1
+    ? [{name, value:parts[0]}]
+    : parts.map((part, index) => ({name:`${name} (${index + 1}/${parts.length})`, value:part}));
+}
+
+// Builds a safe mention for a Discord id
+export function mention(kind, id) {
+  if (!id) {return "None";}
+  if (kind === "role")   {return `<@&${id}>`;}
+  if (kind === "user")   {return `<@${id}>`;}
+  if (kind === "channel"){return `<#${id}>`;}
+  return String(id);
+}
+
+// Replaces {variable} placeholders in a template string
+export function renderTemplate(template, variables = {}) {
+  return String(template ?? "").replace(/\{([a-zA-Z0-9_]+)\}/g, (match, key) =>
+    Object.hasOwn(variables, key) ? String(variables[key] ?? "") : match
+  );
+}
+
+// Returns a usable button emoji from a configured emoji or label
+export function firstEmoji(value, fallback = "•") {
+  const text = String(value ?? "").trim();
+  if (!text) {return fallback;}
+  const custom = /^<a?:\w+:\d+>$/.exec(text);
+  if (custom) {return text;}
+  return [...text][0] ?? fallback;
+}
+
 /*
 =====================================================
 Channel Helpers

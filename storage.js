@@ -715,6 +715,32 @@ export function initDB() {
       event_id TEXT NOT NULL,
       received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (provider, event_id));
+    CREATE TABLE IF NOT EXISTS guild_counters (
+      guild_id TEXT NOT NULL,
+      counter_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      role_id TEXT,
+      label TEXT,
+      metric TEXT,
+      source TEXT NOT NULL DEFAULT 'guild',
+      platform TEXT,
+      creator_id TEXT,
+      refresh_enabled INTEGER NOT NULL DEFAULT 1,
+      last_value TEXT,
+      last_refreshed_at TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (guild_id, counter_id),
+      FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      state TEXT PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL);
   `);
 
   db.exec(`
@@ -776,6 +802,15 @@ export function initDB() {
   addColumnIfMissing("guild_settings", "goodbye_profile", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing("guild_settings", "notice_channel_id", "TEXT");
   addColumnIfMissing("guild_settings", "timezone", "TEXT");
+  addColumnIfMissing("guild_settings", "tickets_channel_id", "TEXT");
+  addColumnIfMissing("guild_settings", "bot_detection_channel_id", "TEXT");
+  addColumnIfMissing("guild_counters", "metric", "TEXT");
+  addColumnIfMissing("guild_counters", "source", "TEXT NOT NULL DEFAULT 'guild'");
+  addColumnIfMissing("guild_counters", "platform", "TEXT");
+  addColumnIfMissing("guild_counters", "creator_id", "TEXT");
+  addColumnIfMissing("guild_counters", "refresh_enabled", "INTEGER NOT NULL DEFAULT 1");
+  addColumnIfMissing("guild_counters", "last_value", "TEXT");
+  addColumnIfMissing("guild_counters", "last_refreshed_at", "TEXT");
   addColumnIfMissing("user_dm_settings", "timezone", "TEXT");
   addColumnIfMissing("youtube_channels", "content_available", "INTEGER NOT NULL DEFAULT 1");
   addColumnIfMissing("youtube_channels", "content_check_at", "INTEGER");

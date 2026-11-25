@@ -15,7 +15,8 @@ const CHANNEL_COLUMNS = {
   logs:          "logs_channel_id",
   updates:       "updates_channel_id",
   status:        "status_channel_id",
-  tickets:       "tickets_channel_id"
+  tickets:       "tickets_channel_id",
+  "bot-detection": "bot_detection_channel_id"
 };
 
 const CHANNEL_COLUMN_NAMES = Object.values(CHANNEL_COLUMNS);
@@ -206,9 +207,10 @@ function saveDefaultChannelAssignments(guildId, channelId) {
   getDB().prepare(`
     INSERT INTO guild_settings (
       guild_id, announcement_channel_id, welcome_channel_id, goodbye_channel_id,
-      logs_channel_id, updates_channel_id, status_channel_id, created_at, updated_at
+      logs_channel_id, updates_channel_id, status_channel_id, tickets_channel_id,
+      created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     ON CONFLICT(guild_id) DO UPDATE SET
       announcement_channel_id = excluded.announcement_channel_id,
       welcome_channel_id = excluded.welcome_channel_id,
@@ -216,8 +218,9 @@ function saveDefaultChannelAssignments(guildId, channelId) {
       logs_channel_id = excluded.logs_channel_id,
       updates_channel_id = excluded.updates_channel_id,
       status_channel_id = excluded.status_channel_id,
+      tickets_channel_id = excluded.tickets_channel_id,
       updated_at = CURRENT_TIMESTAMP
-  `).run(guildId, channelId, channelId, channelId, channelId, channelId, channelId);
+  `).run(guildId, channelId, channelId, channelId, channelId, channelId, channelId, channelId);
 }
 
 export function setChannel(guildId, purpose, channelId) {
@@ -398,6 +401,57 @@ export async function ensureChannel(guild, purpose) {
   setChannel(guild.id, purpose, created.id);
   log.info("BargazBot created #bargaz for a missing feature channel:", guild.id, purpose, created.id);
   return created;
+}
+
+export async function ensureNamedChannel(guild, purpose, name, options = {}) {
+  ensureGuildData(guild);
+
+  const existing = await getChannel(guild, purpose);
+  if (existing) {return existing;}
+
+  const wanted = String(name ?? `bargaz-${purpose}`)
+    .replace(/[^a-z0-9-]/gi, "-")
+    .toLowerCase()
+    .slice(0, 100);
+
+  const named = guild.channels.cache.find(channel =>
+    channel.name === wanted &&
+    (options.type === undefined || channel.type === options.type)
+  );
+  if (named && isUsableTextChannel(named)) {
+    setChannel(guild.id, purpose, named.id);
+    return named;
+  }
+
+  const payload = {
+    name:wanted,
+    type:options.type ?? discord.ChannelType.GuildText,
+    reason:options.reason ?? `BargazBot ${purpose} channel`,
+    permissionOverwrites:options.permissionOverwrites ?? []
+  };
+  if (options.topic)  {payload.topic = options.topic;}
+  if (options.parent) {payload.parent = options.parent;}
+
+  const created = await guild.channels.create(payload);
+  setChannel(guild.id, purpose, created.id);
+  log.info("BargazBot created managed channel:", guild.id, purpose, created.id);
+  return created;
+}
+
+export async function deleteManagedChannel(guild, purpose, reason = "BargazBot managed channel removed") {
+  const channel = await getChannel(guild, purpose);
+  if (!channel) {return false;}
+
+  try {
+    await channel.delete(reason);
+  } catch (error) {
+    log.warn("BargazBot managed channel delete failed:", guild.id, purpose, error);
+    return false;
+  }
+
+  clearChannel(guild.id, purpose);
+  log.info("BargazBot managed channel removed:", guild.id, purpose, channel.id);
+  return true;
 }
 
 /*

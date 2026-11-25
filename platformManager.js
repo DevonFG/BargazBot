@@ -2,6 +2,9 @@ import * as youtube from "./youtube.js";
 import * as twitch from "./twitch.js";
 import * as kick from "./kick.js";
 import * as notifications from "./notifications.js";
+import * as counters from "./counters.js";
+import * as roleRewards from "./roleRewards.js";
+import * as log from "./appLogger.js";
 import {isShutdownRequested} from "bargaz/shutdownCoordinator.js";
 
 const DEFAULT_CHECK_INTERVAL = 300000;
@@ -42,6 +45,18 @@ function describePlatformError(error) {
   return status
     ? `${status}: ${message}`
     : message;
+}
+
+async function runPostPollHooks() {
+  if (!client || stopping || isShutdownRequested()) {return;}
+  for (const guild of client.guilds.cache.values()) {
+    await roleRewards.recheckRewards(client, guild.id).catch(error =>
+      log.warn("BargazBot reward recheck failed:", guild.id, error)
+    );
+    await counters.refreshSocialCounters(guild.id).catch(error =>
+      log.warn("BargazBot social counter refresh failed:", guild.id, error)
+    );
+  }
 }
 
 export async function drainPlatformJobs() {
@@ -233,7 +248,7 @@ async function checkYouTube() {
         );
 
     } catch (error) {
-      console.error(
+      log.error(
         `Failed to check YouTube channel ${channel.channel_id}:`,
         describePlatformError(error)
       );
@@ -267,7 +282,7 @@ async function checkTwitch() {
     return results;
 
   } catch (error) {
-    console.error(
+    log.error(
       "Failed to check Twitch channels:",
       error
     );
@@ -300,7 +315,7 @@ async function checkKick() {
     return results;
 
   } catch (error) {
-    console.error(
+    log.error(
       "Failed to check Kick channels:",
       error
     );
@@ -325,7 +340,7 @@ export async function checkPlatforms() {
   }
 
   if (monitorRunning) {
-    console.warn(
+    log.warn(
       "Platform check skipped because the previous check is still running."
     );
 
@@ -335,15 +350,24 @@ export async function checkPlatforms() {
   monitorRunning = true;
 
   try {
-    await trackJob(Promise.allSettled([
+    const settled = await trackJob(Promise.allSettled([
       checkYouTube(),
       checkTwitch(),
       checkKick()
     ]));
 
+    for (const outcome of settled) {
+      if (outcome.status === "rejected") {
+        log.error("BargazBot platform check failed:", outcome.reason);
+      }
+    }
+
+    await runPostPollHooks();
+
   } finally {
     monitorRunning = false;
   }
+
 }
 
 
@@ -376,15 +400,17 @@ async function refreshYouTubeMetadata() {
           );
 
       } catch (error) {
-        console.error(
+        log.error(
           `Failed to process YouTube metadata update for ${result.content?.id}:`,
           error
         );
       }
     }
 
+    await runPostPollHooks();
+
   } catch (error) {
-    console.error(
+    log.error(
       "Failed to refresh active YouTube content:",
       describePlatformError(error)
     );
@@ -419,13 +445,13 @@ function cleanupContent() {
       kickRemoved;
 
     if (totalRemoved > 0) {
-      console.log(
+      log.info(
         `Removed ${totalRemoved} expired notification content record(s).`
       );
     }
 
   } catch (error) {
-    console.error(
+    log.error(
       "Failed to clean expired notification content:",
       error
     );
@@ -442,7 +468,7 @@ Monitor Startup
 export async function startPlatformManager(discordClient) {
   if (stopping || isShutdownRequested()) {return;}
   if (client) {
-    console.warn(
+    log.warn(
       "Platform manager is already running."
     );
 
@@ -452,14 +478,14 @@ export async function startPlatformManager(discordClient) {
   client =
     discordClient;
 
-  console.log(
+  log.info(
     "Starting BargazBot platform manager."
   );
 
   try {
     await checkPlatforms();
   } catch (error) {
-    console.error("Initial platform check failed:", error);
+    log.error("Initial platform check failed:", error);
   }
 
   if (stopping || isShutdownRequested()) {return;}
@@ -469,7 +495,7 @@ export async function startPlatformManager(discordClient) {
       () => {
         checkPlatforms().catch(
           error => {
-            console.error(
+            log.error(
               "Platform monitor failed:",
               error
             );
@@ -485,7 +511,7 @@ export async function startPlatformManager(discordClient) {
         refreshYouTubeMetadata()
           .catch(
             error => {
-              console.error(
+              log.error(
                 "YouTube metadata monitor failed:",
                 error
               );
@@ -501,7 +527,7 @@ export async function startPlatformManager(discordClient) {
       CLEANUP_INTERVAL
     );
 
-  console.log(
+  log.info(
     "BargazBot platform manager started."
   );
 }
@@ -518,7 +544,7 @@ export function stopPlatformManager() {
   if (monitorInterval) {clearInterval(monitorInterval); monitorInterval = null;}
   if (metadataInterval) {clearInterval(metadataInterval); metadataInterval = null;}
   if (cleanupInterval) {clearInterval(cleanupInterval); cleanupInterval = null;}
-  console.log("BargazBot platform manager stopped accepting new work.");
+  log.info("BargazBot platform manager stopped accepting new work.");
 }
 
 
@@ -538,11 +564,14 @@ export async function checkPlatform(platform) {
     );
   }
 
+  let results;
   switch (platform) {
-    case "youtube": return trackJob(checkYouTube());
-    case "twitch": return trackJob(checkTwitch());
-    case "kick": return trackJob(checkKick());
+    case "youtube": results = await trackJob(checkYouTube()); break;
+    case "twitch": results = await trackJob(checkTwitch()); break;
+    case "kick": results = await trackJob(checkKick()); break;
   }
+  await runPostPollHooks();
+  return results;
 }
 
 

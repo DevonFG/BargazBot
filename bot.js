@@ -18,6 +18,16 @@ import * as inactivity      from "./inactivity.js";
 import * as timers          from "./timers.js";
 import * as autopublish     from "./autopublish.js";
 import * as counters        from "./counters.js";
+import * as guildLogger     from "./guildLogger.js";
+import * as reactionRoles   from "./reactionRoles.js";
+import * as verification    from "./verification.js";
+import * as tickets         from "./tickets.js";
+import * as navigation      from "./navigation.js";
+import * as autoMod         from "./autoMod.js";
+import * as auditMonitor    from "./auditMonitor.js";
+import * as accountLinking  from "./accountLinking.js";
+import * as roleRewards     from "./roleRewards.js";
+import * as webhooks        from "./webhooks.js";
 
 import {startUpsNotifier, stopUpsNotifier}                           from "./upsNotifier.js";
 import {startDiagnosticsNotifier, stopDiagnosticsNotifier}           from "./diagnosticsNotifier.js";
@@ -47,6 +57,45 @@ app.get("/health", (req, res) => {
 
 feedback.registerRoutes(app);
 
+app.get("/oauth/:platform/callback", async (req, res) => {
+  try {
+    const result = await accountLinking.handleOAuthCallback(client, {
+      platform:req.params.platform,
+      state:req.query.state,
+      code:req.query.code
+    });
+    if (!result.success) {
+      res.status(400).type("text/plain").send(`Account linking failed: ${result.reason ?? "unknown error"}.`);
+      return;
+    }
+    res.status(200).type("text/plain").send(`${result.account.platform} account linked as ${result.account.username}. You can close this window.`);
+  } catch (error) {
+    appLogger.error("OAuth callback route failed:", error);
+    res.status(500).type("text/plain").send("Account linking failed unexpectedly.");
+  }
+});
+
+app.post("/webhooks/:provider",
+  express.raw({type:"*/*", limit:"1mb"}),
+  async (req, res) => {
+    try {
+      const rawBody = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
+      let body;
+      try {body = JSON.parse(rawBody);} catch {
+        body = Object.fromEntries(new URLSearchParams(rawBody));
+        if (typeof body.data === "string") {try {body.data = JSON.parse(body.data);} catch {}}
+      }
+      const result = await webhooks.handleWebhookRequest(
+        client, req.params.provider, body, req.headers, rawBody
+      );
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (error) {
+      appLogger.error("Webhook route failed:", error);
+      res.status(500).json({ok:false, reason:"route-error"});
+    }
+  }
+);
+
 const server = app.listen(PORT, "127.0.0.1", () => {
   console.log(`Health and feedback server listening on 127.0.0.1:${PORT}`);
 });
@@ -62,7 +111,8 @@ const client = new discord.Client({
     discord.GatewayIntentBits.Guilds,
     discord.GatewayIntentBits.GuildMessages,
     discord.GatewayIntentBits.MessageContent,
-    discord.GatewayIntentBits.GuildMembers
+    discord.GatewayIntentBits.GuildMembers,
+    discord.GatewayIntentBits.GuildMessageReactions
   ]
 });
 
@@ -287,6 +337,7 @@ function closeBotServices() {
     timers.stopTimers();
     autopublish.stopAutoPublish();
     counters.stopCounters();
+    auditMonitor.stopAuditMonitor();
     platformManager.stopPlatformManager();
     stopDataCleanup();
     commands.stopCommandCollectors();
@@ -407,6 +458,7 @@ Events
 
 onceBotEvent("clientReady", async () => {
   owner.initOwnerSystem(client);
+  guildLogger.setClient(client);
   startUpsNotifier(client);
   startDiagnosticsNotifier();
   console.log(`Logged in as ${client.user.tag}!`);
@@ -453,6 +505,7 @@ onceBotEvent("clientReady", async () => {
   timers.startTimers(client);
   autopublish.startAutoPublish(client);
   counters.startCounters(client);
+  auditMonitor.startAuditMonitor(client);
 });
 
 onBotEvent("guildCreate", async guild => {
@@ -495,6 +548,11 @@ onBotEvent("guildMemberUpdate", async (oldMember, newMember) => {
     const afterRoles  = new Set(newMember.roles.cache.keys());
     if (beforeRoles.size !== afterRoles.size || [...beforeRoles].some(id => !afterRoles.has(id))) {
       await counters.refreshGuildCounters(newMember.guild);
+    }
+    if ([...afterRoles].some(id => !beforeRoles.has(id))) {
+      roleRewards.handleDiscordEvent(client, {
+        type:"role", guildId:newMember.guild.id, userId:newMember.id
+      }).catch(error => appLogger.error("Role reward check failed:", newMember.guild.id, error));
     }
     const currentlyAllowed  = permissions.canUseCommand(newMember, "entitlement", "allocate");
     if (previouslyAllowed && !currentlyAllowed) {
@@ -546,6 +604,15 @@ onBotEvent("guildUpdate", async (oldGuild, newGuild) => {
   }
 });
 
+onBotEvent("channelUpdate", async (oldChannel, newChannel) => {
+  if (isShutdownRequested()) {return;}
+  try {
+    await navigation.handleChannelUpdate(client, newChannel);
+  } catch (error) {
+    appLogger.error("Failed to refresh navigation:", newChannel.guild?.id, error);
+  }
+});
+
 onBotEvent("messageCreate", async message => {
   if (isShutdownRequested()) {return;}
 
@@ -559,6 +626,36 @@ onBotEvent("messageCreate", async message => {
 
   await feedback.handleReply(message);
   await owner.handleOwnerMessage(message);
+
+  const detected = await verification.handleBotDetectionMessage(client, message);
+  if (!detected) {await autoMod.checkMessage(client, message);}
+  if (!message.author.bot) {
+    roleRewards.handleDiscordEvent(client, {
+      type:"message", guildId:message.guild.id, userId:message.author.id
+    }).catch(error => appLogger.error("Message reward check failed:", message.guild.id, error));
+  }
+});
+
+onBotEvent("messageReactionAdd", async (reaction, user) => {
+  if (isShutdownRequested() || user.bot) {return;}
+  try {
+    await reactionRoles.handleReaction(client, {
+      user, emoji:reaction.emoji, message:reaction.message
+    }, false);
+  } catch (error) {
+    appLogger.error("Failed to add reaction role:", reaction.message.guild?.id, error);
+  }
+});
+
+onBotEvent("messageReactionRemove", async (reaction, user) => {
+  if (isShutdownRequested() || user.bot) {return;}
+  try {
+    await reactionRoles.handleReaction(client, {
+      user, emoji:reaction.emoji, message:reaction.message
+    }, true);
+  } catch (error) {
+    appLogger.error("Failed to remove reaction role:", reaction.message.guild?.id, error);
+  }
 });
 
 onBotEvent("interactionCreate", async interaction => {
@@ -568,6 +665,23 @@ onBotEvent("interactionCreate", async interaction => {
         content: "BargazBot is shutting down. Please try again later.",
         flags: discord.MessageFlags.Ephemeral
       }).catch(() => {});
+    }
+    return;
+  }
+  if (interaction.isButton() || interaction.isAnySelectMenu()) {
+    const id = interaction.customId ?? "";
+    try {
+      let handled = false;
+      if (id.startsWith("rr:") || id.startsWith("rr-select:")) {
+        handled = await reactionRoles.handleComponent(interaction);
+      } else if (id.startsWith("verify:")) {
+        handled = await verification.handleComponent(interaction);
+      } else if (id.startsWith("ticket:type:") || id.startsWith("ticket:open:") ||
+                 id.startsWith("ticket:close:") || id === "ticket:none") {
+        handled = await tickets.handleComponent(interaction);
+      }
+    } catch (error) {
+      appLogger.error("Component handling failed:", interaction.guildId, error);
     }
     return;
   }

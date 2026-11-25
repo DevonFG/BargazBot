@@ -1,16 +1,12 @@
 import * as discord from "discord.js";
-import {createLogger} from "bargaz/logging.js";
+import * as guildLogger from "./guildLogger.js";
 import * as log from "./appLogger.js";
 import * as featureSettings from "./featureSettings.js";
 import * as channelManager from "./channelManager.js";
 import {getDB} from "./storage.js";
 import {trackBotCallback, trackBackgroundTask} from "./lifecycle.js";
 
-const logging = createLogger({
-  EmbedBuilder: discord.EmbedBuilder,
-  getDB,
-  getChannel: channelManager.getChannel
-});
+const logging = guildLogger.createLogger();
 
 let client = null;
 let messageHandler = null;
