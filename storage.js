@@ -586,6 +586,7 @@ export function initDB() {
       message_id TEXT,
       title TEXT NOT NULL DEFAULT 'Support tickets',
       description TEXT,
+      config_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (guild_id, panel_id),
@@ -601,6 +602,7 @@ export function initDB() {
       category_id TEXT,
       emoji TEXT,
       position INTEGER NOT NULL DEFAULT 0,
+      config_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (guild_id, panel_id, type_id),
       FOREIGN KEY (guild_id, panel_id) REFERENCES ticket_panels(guild_id, panel_id) ON DELETE CASCADE);
@@ -894,6 +896,8 @@ export function initDB() {
   addColumnIfMissing("reaction_role_options", "menu_kind", "TEXT");
   addColumnIfMissing("reaction_role_options", "button_label", "TEXT");
   addColumnIfMissing("reaction_role_options", "position", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("ticket_panels", "config_json", "TEXT NOT NULL DEFAULT '{}'");
+  addColumnIfMissing("ticket_types", "config_json", "TEXT NOT NULL DEFAULT '{}'");
 
   const legacyRewards = db.prepare(`
     SELECT guild_id, reward_id, trigger_type, platform, provider_account_id, metric, threshold, conditions_json

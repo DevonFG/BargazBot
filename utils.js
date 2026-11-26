@@ -109,6 +109,7 @@ export function buildButtonRow(buttons) {
 
 // Builds an action row containing one channel select menu
 // config = {placeholder, minValues, maxValues, disabled, channelTypes}
+// channelTypes defaults to all channels the bot/user can see in the picker.
 export function buildChannelSelectRow(customId, config = {}) {
   const maxValues = Math.max(1, Math.min(config.maxValues ?? 1, 25));
   const minValues = Math.max(0, Math.min(config.minValues ?? 1, maxValues));
@@ -120,8 +121,8 @@ export function buildChannelSelectRow(customId, config = {}) {
       .setMaxValues(maxValues)
       .setDisabled(Boolean(config.disabled))
   );
-  const channelTypes = (config.channelTypes ?? [discord.ChannelType.GuildText, discord.ChannelType.GuildAnnouncement]).filter(Boolean);
-  if (channelTypes.length) {row.components[0].setChannelTypes(...channelTypes);}
+  const channelTypes = Array.isArray(config.channelTypes) ? config.channelTypes.filter(Boolean) : null;
+  if (channelTypes?.length) {row.components[0].setChannelTypes(...channelTypes);}
   return row;
 }
 

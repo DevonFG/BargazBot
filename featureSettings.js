@@ -37,6 +37,7 @@ export {
   FEATURE_DEFAULTS,
   getFeatureSettings,
   getFeatureSetting,
+  setFeatureSetting,
   getCommandResponseType,
   getGuildWelcomeMessage,
   getGuildWelcomeOptions,

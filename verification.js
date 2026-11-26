@@ -58,8 +58,8 @@ export async function setupVerification(guild, patch = {}) {
     roleId = role.id;
   }
 
-  if (next.botDetectionChannelId === "create" ||
-      (patch.createBotDetectionChannel && !next.botDetectionChannelId)) {
+  if (next.botDetectionChannelId === "create" || patch.createBotDetectionChannel) {
+    if (patch.createBotDetectionChannel) {try {channelManager.setChannel(guild.id, "bot-detection", null);} catch {}}
     const channel = await channelManager.ensureNamedChannel(guild, "bot-detection", "bot-detection", {
       topic:"Post a message here to verify.",
       reason:"BargazBot verification setup",
@@ -78,6 +78,9 @@ export async function setupVerification(guild, patch = {}) {
 
   next.roleId = roleId;
   next.roleIds = [...new Set([...(next.roleIds ?? []), roleId].filter(Boolean))];
+  if (next.botDetectionChannelId && next.botDetectionChannelId !== "create") {
+    try {channelManager.setChannel(guild.id, "bot-detection", next.botDetectionChannelId);} catch {}
+  }
   featureSettings.updateVerificationConfig(guild.id, next, patch.actorId ?? null);
 
   if (next.mode === 2) {await applyVerificationPermissions(guild, next, true);}
@@ -118,14 +121,17 @@ export function buildVerificationPayload(guild) {
 }
 
 export async function sendBotDetectionMessage(guild) {
-  const channel = await channelManager.getChannel(guild, "bot-detection");
-  if (!channel) {return false;}
   const config = featureSettings.getVerificationConfig(guild.id);
+  let channel = await channelManager.getChannel(guild, "bot-detection");
+  if (!channel && config.botDetectionChannelId) {
+    channel = guild.channels.cache.get(config.botDetectionChannelId) ?? await guild.channels.fetch(config.botDetectionChannelId).catch(() => null);
+  }
+  if (!channel?.isTextBased?.()) {return false;}
   await channel.send({
     content:"This channel is used to detect unverified users. Posting here will trigger the configured verification action.",
     allowedMentions:{parse:[]}
   }).catch(error => log.warn("Verification notice failed:", guild.id, error));
-  return Boolean(config.botDetectionChannelId);
+  return true;
 }
 
 export async function verifyMember(client, guild, member, options = {}) {

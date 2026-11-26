@@ -111,7 +111,7 @@ export function buildNavigationEmbed(guild, messageId) {
 export function buildNavigationPayload(guild, messageId) {
   const embed = buildNavigationEmbed(guild, messageId);
   if (!embed) {return null;}
-  return {embeds:[embed], allowedMentions:{parse:[]}};
+  return {content:null, embeds:[embed], allowedMentions:{parse:[]}};
 }
 
 export async function createNavigationMessage(guild, channelId, patch = {}) {

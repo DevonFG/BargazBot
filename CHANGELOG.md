@@ -19,6 +19,17 @@ specific platform to have new content. In cases like that, the untested feature 
 Additional Note: Error versions can have beta, dev, and release version
 before and afterwards due to the multi-use of the version type.
 
+## v26.12.0 - Nov 25
+- /help and /dm-help has been alphabetized with some commands pinned at the top and been fixed to be able to list multiple pages when needed
+- Feature config has a new menu with 3 features per page and 2 control rows, new current status indicators, and proper viewable definitions while configuration is in process
+- Menu collectors have changes to have a 10 minute tomeout but the timer resets upon and button/menu interaction
+- Tickets have been redesigned for more configuration, easier setup, proper survey options, and proper ability to close/export/delete tickets
+- Inactivity uses the new channel picker to allow searching for ALL channels
+- Counters have afunctioning back button and delete option
+- Navigation now functions properly
+- Verification has the ability to create a bot detection channel now, as well as can send out the notice message
+- Kick metrics now uses public data when the linked connection fails (if the counter uses linked connections)
+
 ## v26.12.0-beta.4 - Nov 25
 - Renamed /invite to /update
 - Refreshed the update menu UI

@@ -264,13 +264,11 @@ async function createCounterChannel(guild, counter) {
 
 async function lockChannel(channel, guild) {
   const everyone = guild.roles.everyone;
-  const overwrites = await channel.permissionOverwrites.fetch().catch(() => channel.permissionOverwrites.cache);
-  const publicOverwrite = overwrites.get(everyone.id);
+  const manager = channel.permissionOverwrites;
+  const overwrites = manager?.fetch ? await manager.fetch().catch(() => manager.cache) : manager?.cache;
+  const publicOverwrite = overwrites?.get?.(everyone.id);
   if (!publicOverwrite || !publicOverwrite.deny.has(discord.PermissionFlagsBits.Connect)) {
-    await channel.permissionOverwrites.edit(everyone,
-      {ViewChannel:true, Connect:false},
-      {reason:"BargazBot counter channel"}
-    );
+    await manager?.edit?.(everyone, {ViewChannel:true, Connect:false}, {reason:"BargazBot counter channel"});
   }
 }
 
@@ -393,6 +391,15 @@ async function kickMetrics(channelId, token = null) {
   const headers = access ? {authorization:`Bearer ${access}`} : {};
   const id = encodeURIComponent(channelId);
 
+  const fetchPublicFollowers = async (slug) => {
+    try {
+      const res = await fetch(`https://kick.com/api/v2/channels/${encodeURIComponent(slug)}`, {headers:{accept:"application/json"}});
+      if (!res.ok) {return 0;}
+      const body = await res.json().catch(() => ({}));
+      return Number(body?.followers_count ?? body?.followersCount ?? body?.user?.followers_count ?? 0) || 0;
+    } catch {return 0;}
+  };
+
   const fetchBySlug = async () => {
     const row = getDB().prepare("SELECT channel_handle, channel_name FROM kick_channels WHERE channel_id = ?").get(String(channelId));
     const slug = String(row?.channel_handle ?? row?.channel_name ?? "").replace(/^@/, "").trim();
@@ -401,8 +408,16 @@ async function kickMetrics(channelId, token = null) {
     const appHeaders = appAccess ? {authorization:`Bearer ${appAccess}`} : {};
     const data = await fetchJson(`https://api.kick.com/public/v1/channels?slug=${encodeURIComponent(slug)}`, {headers:appHeaders}, {provider:"kick"});
     const channel = data?.data?.[0] ?? {};
+    let followers = Number(channel.followers_count ?? channel.followerCount ?? 0) || 0;
+    const broadcasterId = channel.broadcaster_user_id ?? channel.user_id ?? null;
+    if (!followers && broadcasterId) {
+      const userData = await fetchJson(`https://api.kick.com/public/v1/users?id=${encodeURIComponent(String(broadcasterId))}`, {headers:appHeaders}, {provider:"kick", reportLimit:false}).catch(() => null);
+      const user = userData?.data?.[0] ?? {};
+      followers = Number(user.followers_count ?? user.followerCount ?? 0) || 0;
+    }
+    if (!followers) {followers = await fetchPublicFollowers(slug);}
     return {
-      followers:0,
+      followers,
       subscribers:Number(channel.active_subscribers_count ?? 0),
       views:0,
       videos:0,
@@ -419,8 +434,14 @@ async function kickMetrics(channelId, token = null) {
     const channelData = await fetchJson(`https://api.kick.com/public/v1/channels?user_id=${id}`, {headers}, {provider:"kick", reportLimit:false});
     const user = userData?.data?.[0] ?? {};
     const channel = channelData?.data?.[0] ?? {};
+    let followers = Number(user.followers_count ?? user.followerCount ?? 0) || 0;
+    if (!followers) {
+      const row = getDB().prepare("SELECT channel_handle, channel_name FROM kick_channels WHERE channel_id = ?").get(String(channelId));
+      const slug = String(row?.channel_handle ?? row?.channel_name ?? "").replace(/^@/, "").trim();
+      if (slug) {followers = await fetchPublicFollowers(slug);}
+    }
     return {
-      followers:Number(user.followers_count ?? user.followerCount ?? 0),
+      followers,
       subscribers:Number(channel.active_subscribers_count ?? 0),
       views:Number(user.view_count ?? 0),
       videos:0,

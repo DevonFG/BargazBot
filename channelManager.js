@@ -570,7 +570,7 @@ export async function sendStorageNotice(guild, userId, options = {}) {
     const channel = await ensurePrivacyChannel(guild, userId);
     await channel.send({
       content: buildStorageNoticeContent(userId),
-      allowedMentions: {parse: ["users"], users: [userId]}
+      allowedMentions: {users: [userId]}
     });
     markPrivacyNoticeSent(guild.id, userId);
     log.info("BargazBot storage notice sent:", guild.id, userId, channel.id);
